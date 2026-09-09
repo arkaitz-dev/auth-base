@@ -24,14 +24,17 @@ test belongs in the host.
 
 ## Coordinates
 
+**Not on Clojars yet.** Until it is, take it from git:
+
 ```clojure
 ;; deps.edn
-dev.arkaitz/auth-base {:mvn/version "0.1.0"}
-
-;; or straight from git, to track a commit
 dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
                        :git/sha "<commit>"}
 ```
+
+or build it locally with `clojure -T:build install`, which puts `0.1.0` in your `~/.m2`
+and makes `dev.arkaitz/auth-base {:mvn/version "0.1.0"}` resolve on that machine. When
+it is published this line becomes the ordinary one.
 
 `ring/ring-core` is the only thing that reaches your classpath. Not reitit, not
 web-base, not a template engine, not a database driver.
@@ -92,7 +95,23 @@ which belongs to your stack, so your login view emits the field.
 
 [web-base](https://github.com/arkaitz-dev/web-base) knows *that* there is a subject and
 never *how* it came to be one; it receives a function. auth-base is what sits on the
-other side of that function. Neither depends on the other — **you** hold both:
+other side of that function. Neither depends on the other — **you** hold both, and your
+`deps.edn` is where they meet:
+
+```clojure
+{:deps {org.clojure/clojure  {:mvn/version "1.12.5"}
+        ;; the web foundation — on Clojars
+        dev.arkaitz/web-base {:mvn/version "0.2.0"}
+        ;; the ceremony — from git until it is published
+        dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
+                               :git/sha "<commit>"}}}
+```
+
+web-base brings reitit-ring, hiccup, ring-jetty-adapter, tools.logging, tempura,
+ring-anti-forgery and integrant. auth-base brings `ring-core`, which web-base already
+had. Nothing is duplicated and neither library can see the other.
+
+Then the wiring:
 
 ```clojure
 (require '[dev.arkaitz.web-base :as wb])
@@ -105,7 +124,14 @@ other side of that function. Neither depends on the other — **you** hold both:
   :session    {:key (env "SESSION_KEY")}})
 ```
 
-Five lines, and `demo/` is that application, running.
+Five lines, and `demo/` is that application, running:
+
+```
+AUTH_DEMO_SESSION_KEY=$(openssl rand -base64 16) clojure -M:demo
+```
+
+It prints the link it would have emailed, so you can walk the whole ceremony in a
+browser with nothing installed.
 
 Four things worth knowing, all of them proved by the demo's tests:
 
