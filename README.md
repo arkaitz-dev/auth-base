@@ -35,8 +35,7 @@ dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
                        :git/sha "<commit>"}
 ```
 
-The badge at the top is the version actually published; `clojure -T:build install`
-puts one in your own `~/.m2` in the meantime.
+The badge at the top is the version actually published.
 
 `ring/ring-core` is the only thing that reaches your classpath. Not reitit, not
 web-base, not a template engine, not a database driver.
