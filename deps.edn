@@ -1,0 +1,37 @@
+{:paths ["src"]
+
+ ;; SPEC §3: ring-core and nothing else. Ring is the lingua franca — a handler, a
+ ;; request map, a session map and a store protocol — and depending on anything
+ ;; more is how a module stops being liftable. `dependencies_test.clj` enforces
+ ;; this by reading every ns form under src/.
+ :deps {org.clojure/clojure {:mvn/version "1.12.5"}
+        ring/ring-core      {:mvn/version "1.15.5"}}
+
+ :aliases
+ {:test {:extra-paths ["test" "harness/src" "harness/test" "demo/src" "demo/resources" "demo/test"]
+         :extra-deps  {io.github.cognitect-labs/test-runner
+                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                       ring/ring-mock          {:mvn/version "0.6.2"}
+                       ring/ring-jetty-adapter {:mvn/version "1.15.5"}
+                       dev.arkaitz/web-base    {:mvn/version "0.2.0"}}
+         :main-opts   ["-m" "cognitect.test-runner" "-d" "test" "-d" "harness/test" "-d" "demo/test"]
+         :exec-fn     cognitect.test-runner.api/test}
+
+  ;; SPEC §13: the harness runs on ring alone. A server has to come from
+  ;; somewhere, so the adapter lives on this alias and never in :deps.
+  :harness {:extra-paths ["harness/src"]
+            :extra-deps  {ring/ring-jetty-adapter {:mvn/version "1.15.5"}}
+            :main-opts   ["-m" "harness.main"]}
+
+  ;; The integration probe: the same ceremony wired into web-base.
+  :demo {:extra-paths ["demo/src" "demo/resources"]
+         :extra-deps  {dev.arkaitz/web-base {:mvn/version "0.2.0"}}
+         :main-opts   ["-m" "demo.main"]}
+
+  :dev {:extra-paths ["dev" "harness/src" "demo/src" "demo/resources"]
+        :extra-deps  {ring/ring-jetty-adapter {:mvn/version "1.15.5"}
+                      dev.arkaitz/web-base    {:mvn/version "0.2.0"}}}
+
+  :build {:deps      {io.github.clojure/tools.build {:mvn/version "0.10.14"}
+                      slipset/deps-deploy           {:mvn/version "0.2.5"}}
+          :ns-default build}}}
