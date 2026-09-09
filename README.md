@@ -1,5 +1,7 @@
 # auth-base
 
+[![Clojars Project](https://img.shields.io/clojars/v/dev.arkaitz/auth-base.svg)](https://clojars.org/dev.arkaitz/auth-base)
+
 **The ceremony by which someone becomes a subject, and nothing else.**
 
 It issues a challenge against an identifier, redeems that challenge at most once, and
@@ -24,17 +26,17 @@ test belongs in the host.
 
 ## Coordinates
 
-**Not on Clojars yet.** Until it is, take it from git:
-
 ```clojure
-;; deps.edn
+;; deps.edn — from Clojars
+dev.arkaitz/auth-base {:mvn/version "0.1.0"}
+
+;; or straight from git, to track a commit
 dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
                        :git/sha "<commit>"}
 ```
 
-or build it locally with `clojure -T:build install`, which puts `0.1.0` in your `~/.m2`
-and makes `dev.arkaitz/auth-base {:mvn/version "0.1.0"}` resolve on that machine. When
-it is published this line becomes the ordinary one.
+The badge at the top is the version actually published; `clojure -T:build install`
+puts one in your own `~/.m2` in the meantime.
 
 `ring/ring-core` is the only thing that reaches your classpath. Not reitit, not
 web-base, not a template engine, not a database driver.
@@ -99,12 +101,9 @@ other side of that function. Neither depends on the other — **you** hold both,
 `deps.edn` is where they meet:
 
 ```clojure
-{:deps {org.clojure/clojure  {:mvn/version "1.12.5"}
-        ;; the web foundation — on Clojars
-        dev.arkaitz/web-base {:mvn/version "0.2.0"}
-        ;; the ceremony — from git until it is published
-        dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
-                               :git/sha "<commit>"}}}
+{:deps {org.clojure/clojure   {:mvn/version "1.12.5"}
+        dev.arkaitz/web-base  {:mvn/version "0.2.0"}   ; the web foundation
+        dev.arkaitz/auth-base {:mvn/version "0.1.0"}}} ; the ceremony
 ```
 
 web-base brings reitit-ring, hiccup, ring-jetty-adapter, tools.logging, tempura,
