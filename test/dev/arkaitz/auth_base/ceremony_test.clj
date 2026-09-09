@@ -2,13 +2,8 @@
   "The ceremony's tests. Nothing here sleeps: the clock is an atom shared by
   the ceremony and the store, so expiry is exercised by moving it.
 
-  The load-bearing fixture is `recording`, a store that logs every call and
-  can be told to refuse one. It exists for a single reason: SPEC §11 says the
-  module must behave identically for a known and an unknown address, and a
-  test that only checks *both returned nil* is worth almost nothing — it
-  passes for an implementation that asks the store who this is and then throws
-  the answer away. What has to be observed is that the store was never asked,
-  and only the store itself can say.
+  The load-bearing fixture is `support/recording`, a store that logs every call
+  and can be told to refuse one — see that namespace for why it has to exist.
 
   **What these tests do not prove: timing equality.** It is not measured, and
   a test over wall-clock deltas is a flake generator. What stands in its place
@@ -18,36 +13,9 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
-            [dev.arkaitz.auth-base.store :as store])
+            [dev.arkaitz.auth-base.store :as store]
+            [dev.arkaitz.auth-base.support :as support])
   (:import [clojure.lang ExceptionInfo]))
-
-(defn- recording
-  "`inner`, with every call appended to `log`. A method named in `forbid`
-  records the call and then throws, so a `catch` anywhere in the module hides
-  nothing: the question still shows in the log."
-  ([inner log] (recording inner log #{}))
-  ([inner log forbid]
-   (letfn [(note! [call]
-             (swap! log conj call)
-             (when (forbid (first call))
-               (throw (ex-info (str "the test forbids " (first call)) {:call call}))))]
-     (reify store/Store
-       (put-challenge! [this token identifier expires-at]
-         (note! [:put-challenge! token identifier expires-at])
-         (store/put-challenge! inner token identifier expires-at)
-         this)
-       (take-challenge! [_ token]
-         (note! [:take-challenge! token])
-         (store/take-challenge! inner token))
-       (subject-for [_ identifier]
-         (note! [:subject-for identifier])
-         (store/subject-for inner identifier))
-       (generation [_ subject]
-         (note! [:generation subject])
-         (store/generation inner subject))
-       (bump-generation! [_ subject]
-         (note! [:bump-generation! subject])
-         (store/bump-generation! inner subject))))))
 
 (defn- fixture
   "A ceremony over a recording store, with the clock, the log and the
@@ -58,7 +26,7 @@
         log        (atom [])
         deliveries (atom [])
         inner      (store/in-memory {:subjects subjects :clock #(deref clock)})
-        recorder   (recording inner log (or forbid #{}))]
+        recorder   (support/recording inner log (or forbid #{}))]
     {:clock      clock
      :log        log
      :deliveries deliveries
@@ -73,8 +41,6 @@
                     normalise (assoc :normalise normalise)))}))
 
 (defn- token-of [link] (last (str/split link #"/")))
-
-(defn- calls [log] (mapv first @log))
 
 ;; --- construction ---------------------------------------------------------
 
@@ -125,13 +91,13 @@
     (testing "the recorder really does record — without this an empty call list
               below is what a recorder that logs nothing would produce"
       (is (nil? (ceremony/issue! ceremony "known@x.test")))
-      (is (= [:put-challenge!] (calls log))))
-    (let [known-calls (calls log)
+      (is (= [:put-challenge!] (support/calls log))))
+    (let [known-calls (support/calls log)
           known-args  (first @log)]
       (reset! log [])
       (is (nil? (ceremony/issue! ceremony "unknown@x.test"))
           "an unknown identifier is answered with nothing at all, like a known one")
-      (let [unknown-calls (calls log)]
+      (let [unknown-calls (support/calls log)]
         ;; The invariant. `subject-for` and `generation` would also THROW here,
         ;; so a module that asked and swallowed the answer still shows the
         ;; question.
@@ -188,7 +154,7 @@
           returned (binding [*err* err *out* out]
                      (ceremony/issue! ceremony "ada@x.test"))]
       (is (nil? returned) (str "the caller is told nothing: " label))
-      (is (= [:put-challenge!] (calls log))
+      (is (= [:put-challenge!] (support/calls log))
           (str "and the challenge was recorded before delivery was attempted: " label))
       (is (= "auth-base: delivery failed for \"ada@x.test\" - boom\n" (str err))
           (str "the operator is told, on *err*: " label))
@@ -210,7 +176,7 @@
       (reset! log [])
       (is (nil? (ceremony/redeem! ceremony (str/join (repeat 43 "A"))))
           "a well-formed token the store never held yields nothing")
-      (is (= [:take-challenge!] (calls log))
+      (is (= [:take-challenge!] (support/calls log))
           "control: a well-formed token does reach the store, so an empty log below means something")
       (doseq [[label value]
               [["nil"                    nil]
