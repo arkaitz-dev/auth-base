@@ -1,7 +1,7 @@
-# base-auth — specification
+# auth-base — specification
 
-> **Coordinates.** Directory `base-auth` · repository `arkaitz-dev/base-auth` ·
-> artifact `dev.arkaitz/base-auth` on the day there is one.
+> **Coordinates.** Directory `auth-base` · repository `arkaitz-dev/auth-base` ·
+> artifact `dev.arkaitz/auth-base` on the day there is one.
 >
 > **Status.** Specification. No code. Written 2026-09-09.
 >
@@ -44,7 +44,7 @@ passes its function to web-base, or to any other Ring application, or to none.
 host.** And, settled 2026-09-09, the sharper corollary that had never been written
 down by name:
 
-> **base-auth depends on `ring/ring-core` and nothing else.**
+> **auth-base depends on `ring/ring-core` and nothing else.**
 
 Not on web-base. The first consumer's map already said the base web is a dependency of
 the *application*, not of the modules, and named the reason: the Django trap was never
@@ -151,7 +151,7 @@ never a dependency of this module.
 
 ## 8 · Delivery is a function
 
-base-auth composes the link and calls `(deliver! identifier link)`. It never sends
+auth-base composes the link and calls `(deliver! identifier link)`. It never sends
 mail, because mail transport is a side effect no library can own for every consumer,
 and because the first consumer's log already treats a delivery failure as an
 availability problem rather than a technical one: *with passwords a mail failure
@@ -253,7 +253,7 @@ The module ships a self-contained harness that exercises it end to end with no
 dependency of ours: plain handlers, plain HTML, an in-memory store, and a delivery
 function that writes the link to the console instead of sending it.
 
-**If the harness needs anything base-auth does not provide, the seam is in the wrong
+**If the harness needs anything auth-base does not provide, the seam is in the wrong
 place.** That rule is web-base's, it earned its keep there, and it applies here
 unchanged.
 

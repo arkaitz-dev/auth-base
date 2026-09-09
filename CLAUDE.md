@@ -8,7 +8,7 @@ says **how to work here**, and repeats only the few rules that get broken silent
 
 ## What this is
 
-`dev.arkaitz/base-auth` — the ceremony by which someone becomes a subject, and nothing
+`dev.arkaitz/auth-base` — the ceremony by which someone becomes a subject, and nothing
 else. It is the other half of the seam `web-base` §5 leaves empty: that library knows
 *there is* a subject and never *how* it came to be one.
 
@@ -78,4 +78,4 @@ only fits the application it grew in.
 
 The module ships a self-contained harness: plain handlers, plain HTML, an in-memory
 store, and a delivery function that prints the link instead of sending it. **If the
-harness needs anything base-auth does not provide, the seam is in the wrong place.**
+harness needs anything auth-base does not provide, the seam is in the wrong place.**
