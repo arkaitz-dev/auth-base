@@ -8,12 +8,13 @@
         ring/ring-core      {:mvn/version "1.15.5"}}
 
  :aliases
- {:test {:extra-paths ["test" "harness/src" "harness/test" "demo/src" "demo/resources" "demo/test"]
+ {:test {:extra-paths ["test" "build" "harness/src" "harness/test" "demo/src" "demo/resources" "demo/test"]
          :extra-deps  {io.github.cognitect-labs/test-runner
                        {:git/tag "v0.5.1" :git/sha "dfb30dd"}
-                       ring/ring-mock          {:mvn/version "0.6.2"}
-                       ring/ring-jetty-adapter {:mvn/version "1.15.5"}
-                       dev.arkaitz/web-base    {:mvn/version "0.2.0"}}
+                       ring/ring-mock                {:mvn/version "0.6.2"}
+                       ring/ring-jetty-adapter       {:mvn/version "1.15.5"}
+                       dev.arkaitz/web-base          {:mvn/version "0.2.0"}
+                       io.github.clojure/tools.build {:mvn/version "0.10.14"}}
          :main-opts   ["-m" "cognitect.test-runner" "-d" "test" "-d" "harness/test" "-d" "demo/test"]
          :exec-fn     cognitect.test-runner.api/test}
 
@@ -32,6 +33,9 @@
         :extra-deps  {ring/ring-jetty-adapter {:mvn/version "1.15.5"}
                       dev.arkaitz/web-base    {:mvn/version "0.2.0"}}}
 
-  :build {:deps      {io.github.clojure/tools.build {:mvn/version "0.10.14"}
-                      slipset/deps-deploy           {:mvn/version "0.2.5"}}
-          :ns-default build}}}
+  ;; `build` carries the release guards, which are tested — hence also on :test.
+  ;; It is not in :paths, so like demo/ and harness/ it never enters the jar.
+  :build {:extra-paths ["build"]
+          :deps        {io.github.clojure/tools.build {:mvn/version "0.10.14"}
+                        slipset/deps-deploy           {:mvn/version "0.2.5"}}
+          :ns-default  build}}}
