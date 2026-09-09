@@ -31,6 +31,8 @@ work**, never from convention. Observed:
 clojure -M:test                        # whole suite incl. harness/ and demo/; exit ≠ 0 on failure
 clojure -M:test -n <namespace>         # one namespace (several -n allowed)
 clojure -T:build jar                   # library jar → target/auth-base-0.1.0.jar (no demos inside)
+clojure -T:build install               # jar + pom into ~/.m2, for a consumer on this machine
+clojure -T:build deploy                # to Clojars with CLOJARS_USERNAME/CLOJARS_PASSWORD; run for 0.1.0
 clojure -M:harness [port]              # the ring-only harness, default 3001
 AUTH_DEMO_SESSION_KEY=$(openssl rand -base64 16) clojure -M:demo [port]   # the web-base demo, default 3000
 ```
@@ -38,6 +40,14 @@ AUTH_DEMO_SESSION_KEY=$(openssl rand -base64 16) clojure -M:demo [port]   # the 
 ⚠ `clojure -M:harness -e "…"` does **not** replace the alias's `:main-opts`, it appends
 to them: the server starts and the expression never runs. For a one-off script use
 `clojure -Sdeps '{:paths ["src" "harness/src"] :deps {…jetty…}}' -M -e "…"`.
+
+`deploy` refuses before it touches the network unless the tree is clean, `HEAD` is what
+the remote has, and `vX.Y.Z` exists neither here nor on the remote; then it publishes
+and **tags**, in that order — after Clojars accepts, because a tag left by a failed
+deploy would block the retry. The guards are `build/release.clj` (outside `:paths`, so
+never in the jar), tested against real throwaway repositories in `release_test.clj`. So
+a release is: bump `version` in `build.clj` → commit → push → `deploy`. Anything missing
+is refused by name.
 
 Browser smoke of the demo (Playwright, 2026-09-09; repeat after touching views): link
 redeemed → `/privado` names the subject → revoke ends the session that asked → the
@@ -90,6 +100,11 @@ of these fails silently.**
   id and cannot enumerate a subject's sessions. Revocation lives on the subject, as a
   generation compared per request (SPEC §10). A store that deletes by index is an
   optimisation, never the contract.
+- **`b/git-process` fails open.** It returns `nil` for a command that failed **and**
+  for one that succeeded with no output, so `(b/git-process {:git-args "status
+  --porcelain"})` cannot tell a clean tree from a git that never ran. Anything in
+  `build/` that shells out uses `b/process` and reads `:exit`. A guard built on the
+  other one publishes in exactly the case it exists to stop.
 - **Looking for a configuration file nobody named.** The bootstrap list arrives as data
   the host passes in. A library that knows a filename can look for it, and then the
   directory a process started from decides who is an administrator.
