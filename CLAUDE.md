@@ -14,14 +14,42 @@ else. It is the other half of the seam `web-base` §5 leaves empty: that library
 
 ## Project state
 
-**Specification settled 2026-09-09; no code.** Nothing has been run, so no build or
-test command is recorded here yet. Commands are written down **only once they have
-actually been run and observed to work**, never from convention.
+**Implemented 2026-09-09.** The commit history is the record, one granular step per
+commit. Every namespace under `src/dev/arkaitz/auth_base/` is one seam of `SPEC.md`,
+and `src/dev/arkaitz/auth_base.clj`'s docstring is the wiring. `SPEC.md` §17 records
+what implementation settled and the two signatures it corrected.
 
-The first implementation should be written **inside a real application and lifted out
-once it works**, the way web-base was extracted from a working prototype. Writing the
-library first is what SPEC §16 argues against, and the intended first consumer has no
-code yet.
+SPEC §16 argued for writing this inside a real application and lifting it out. There
+was none, so the substitute is that it is proved **twice**: `harness/` in ring alone
+(the acceptance test of §13) and `demo/` wired into web-base (the integration probe).
+Both found real defects in the module's own surface — see §17.
+
+Commands are recorded here **only once they have actually been run and observed to
+work**, never from convention. Observed:
+
+```
+clojure -M:test                        # whole suite incl. harness/ and demo/; exit ≠ 0 on failure
+clojure -M:test -n <namespace>         # one namespace (several -n allowed)
+clojure -T:build jar                   # library jar → target/auth-base-0.1.0.jar (no demos inside)
+clojure -M:harness [port]              # the ring-only harness, default 3001
+AUTH_DEMO_SESSION_KEY=$(openssl rand -base64 16) clojure -M:demo [port]   # the web-base demo, default 3000
+```
+
+⚠ `clojure -M:harness -e "…"` does **not** replace the alias's `:main-opts`, it appends
+to them: the server starts and the expression never runs. For a one-off script use
+`clojure -Sdeps '{:paths ["src" "harness/src"] :deps {…jetty…}}' -M -e "…"`.
+
+Browser smoke of the demo (Playwright, 2026-09-09; repeat after touching views): link
+redeemed → `/privado` names the subject → revoke ends the session that asked → the
+same link says spent; console free of CSP violations under the strict policy.
+
+Test discipline in force: every test written under `/write-test` with a contract that
+named the invariant before the body, then watched go red by named mutations — 90-odd
+mutants, all killed, re-run in full after every test edit. The store, ceremony, session
+and handlers went through a mixed-model adversarial panel, and the panel's own
+remediations through a second one. `structure_test.clj` scans `src/` with the reader
+and fails if anything but clojure, ring or this module is required, or if a var root
+reaches a `SecureRandom`; neither is observable through behaviour.
 
 ## The three rules that must survive contact with code
 

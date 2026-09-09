@@ -3,7 +3,8 @@
 > **Coordinates.** Directory `auth-base` · repository `arkaitz-dev/auth-base` ·
 > artifact `dev.arkaitz/auth-base` on the day there is one.
 >
-> **Status.** Specification. No code. Written 2026-09-09.
+> **Status.** Implemented 2026-09-09. §17 records what implementation settled and
+> what it changed in this document.
 >
 > **Provenance.** This is the other half of a seam that already exists. `web-base`
 > §5 states that it knows *there is a subject* and never *how that subject came to
@@ -57,12 +58,15 @@ speaks them. A web-base host wires it in five lines:
 
 ```clojure
 (wb/handler
-  {:routes     (into (auth/routes auth-config) my-routes)
-   :subject-fn auth/subject
-   :login-path "/entrar"})
+  {:routes     (into (auth/routes ceremony auth-config) my-routes)
+   :subject-fn (auth/subject-fn ceremony)
+   :login-path "/entrar"
+   :session    {:key …}})
 ```
 
-and a host that has never heard of web-base mounts the same handlers itself.
+and a host that has never heard of web-base mounts the same handlers itself. Both
+functions take the ceremony because it is a value the host builds once and holds; the
+names above were written before there was any code and §17 records the correction.
 
 ## 4 · The membership test
 
@@ -134,11 +138,17 @@ The port is small enough to write on one hand:
 ```clojure
 (defprotocol Store
   (put-challenge!  [store token identifier expires-at])
-  (take-challenge! [store token])   ; single use: returns the identifier, or nil, and never twice
+  (take-challenge! [store token])   ; single use: returns the row it removed, or nil, and never twice
   (subject-for     [store identifier])
   (generation      [store subject])
   (bump-generation! [store subject]))
 ```
+
+`take-challenge!` returns **the whole row** — `{:ab/identifier id :ab/expires-at ms}` —
+and not the bare identifier this document first wrote, because the port carries no
+clock: expiry is the ceremony's policy and the ceremony needs the expiry to judge it.
+It consumes a spent challenge whether or not it had expired, so an expired link cannot
+be retried (§17).
 
 `take-challenge!` is the load-bearing one: **it must be atomic**, because "redeem at
 most once" is the whole security of a link that travels by email, and a store that
@@ -316,3 +326,49 @@ small, and the parts of it that are hypotheses are marked as open in §15 rather
 dressed as decisions. **The first implementation should be written inside a real
 application and lifted out once it works**, exactly as web-base was. Nothing here
 argues for writing the library first.
+
+## 17 · Settled during implementation, 2026-09-09
+
+The module was written, tested and proved twice on the day this document was
+finished — once by the ring-only harness of §13, once by a web-base application. What
+follows is what that changed. Everything not listed here stood.
+
+**Two names in §3 were written before there was code**, and are now what the module
+actually exports: `(auth/subject-fn ceremony)` rather than `auth/subject`, and
+`(auth/routes ceremony opts)` rather than `(auth/routes auth-config)`. Both take the
+ceremony because it is a value, built once by the host and held — not a configuration
+map re-read per request.
+
+**One signature changed.** `take-challenge!` returns the row it removed rather than the
+identifier alone (§7). The port carries no clock on purpose, so the caller that owns
+the expiry policy needs the expiry back. The change is in §7 and in the protocol's
+docstring; a store that returns a bare identifier now fails a test that names it.
+
+**Two things the module refuses that this document did not ask it to.**
+
+- **An option nobody reads.** `ceremony` and `handlers` name their keys and throw on
+  any other. This was not fastidiousness: the harness passed `:rate-limit` to the
+  ceremony, where nothing read it, and the limit silently did not exist. A key the host
+  believes is in force and nothing honours is worse than a missing one.
+- **An expiry that is not a number.** The in-memory store refuses it in the call that
+  wrote it and before writing anything. One unusable row would otherwise throw from
+  whichever later call pruned next, and wedge everybody's login from a call that had
+  nothing to do with it.
+
+**Two conventions the module now states, because getting them wrong was silent.**
+
+- Ring middleware takes the handler first: `(wrap-revoked handler ceremony)`, against
+  the ceremony-first order of the three acts. A Clojure map is callable, so a swapped
+  pair returns nil from every request instead of throwing.
+- The rate limiter inherits the ceremony's clock. §5 gives the module a clock so expiry
+  is testable without waiting, and a limiter reading the wall clock would have left the
+  window as the one thing that could still only be tested by sleeping.
+
+**One thing the module was not asked for and is not.** `false` is a subject. web-base
+already says so of the value it receives, and a host whose store answers `false` must
+not fall through to the bootstrap list.
+
+**Still open, unchanged by any of this**: the method (§6), the link's mechanics beyond
+what shipped, the second factor, the rate limit's final shape, the account lifecycle,
+and whether `subject-for` may ever create. Implementation answered none of them and was
+not asked to.
