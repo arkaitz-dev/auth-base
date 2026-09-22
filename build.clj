@@ -32,7 +32,7 @@
                             :connection          (str "scm:git:" url ".git")
                             :developerConnection (str "scm:git:" url ".git")
                             :tag                 (str "v" version)}
-                :pom-data  [[:description "Authentication as a liftable module: issue a challenge, redeem it once, hand back a subject. Depends on ring-core and nothing else."]
+                :pom-data  [[:description "Authentication as a liftable module: issue a challenge, redeem it once, hand back a subject. Depends on ring-core, and on Integrant only for the one optional namespace that ships its key."]
                             [:url url]
                             [:licenses
                              [:license

@@ -9,8 +9,9 @@ hands back a subject. It establishes the session that carries the subject, and i
 end that subject's access everywhere. That is the whole of it.
 
 It is a **library you call**, not a framework that calls you, and it **does not know
-web-base exists**. Its only dependency is `ring/ring-core` — a handler, a request map,
-a session map and a store protocol, which every Clojure web application already speaks.
+web-base exists**. Its dependency is `ring/ring-core` — a handler, a request map, a
+session map and a store protocol, which every Clojure web application already speaks —
+plus Integrant, which only the one optional namespace that ships its key ever loads.
 
 ## The two rules
 
@@ -37,8 +38,11 @@ dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
 
 The badge at the top is the version actually published.
 
-`ring/ring-core` is the only thing that reaches your classpath. Not reitit, not
-web-base, not a template engine, not a database driver.
+`ring/ring-core` and Integrant are the only things that reach your classpath. Not
+reitit, not web-base, not a template engine, not a database driver. Integrant is there
+for the optional key below and costs two jars; if you wire by hand, you call `ceremony`
+yourself and load neither. A test resolves the real classpath a consumer of this library
+gets and refuses any jar that has not been decided by name, with its reason.
 
 ## What it gives you
 
@@ -107,7 +111,33 @@ other side of that function. Neither depends on the other — **you** hold both,
 
 web-base brings reitit-ring, hiccup, ring-jetty-adapter, tools.logging, tempura,
 ring-anti-forgery and integrant. auth-base brings `ring-core`, which web-base already
-had. Nothing is duplicated and neither library can see the other.
+had, and integrant, which it already had too. Nothing is duplicated and neither library
+can see the other.
+
+### Wiring it with Integrant
+
+Optional, and used rather than imposed. `dev.arkaitz.auth-base.integrant` ships **one**
+key, `:dev.arkaitz.auth-base/ceremony`, and requiring that namespace is what installs it:
+
+```clojure
+(require '[dev.arkaitz.auth-base.integrant])   ; installs the key
+
+{:my/auth-config {:store    #ig/ref :my/store
+                  :deliver! send-the-link!
+                  :link     {:base-url "https://host" :redeem-path "/entrar"}}
+
+ :dev.arkaitz.auth-base/ceremony #ig/ref :my/auth-config}
+```
+
+Two of the ceremony's entries are functions and one is a protocol implementation, and
+functions do not live in EDN — so you build the map in a key of your own and refer to
+it, exactly as web-base's handler key is fed. `routes` and `handlers` stay ordinary
+function calls: a ceremony without routes is a host mounting its own handlers, while
+routes without a ceremony cannot exist, and a second key would hand you a router
+opinion this module does not have.
+
+There is **no `halt-key!`**, and the absence is deliberate: a ceremony owns no socket,
+no pool and no thread. It closes over your store, whose lifetime is yours.
 
 Then the wiring:
 

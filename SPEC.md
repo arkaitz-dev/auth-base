@@ -52,6 +52,22 @@ the *application*, not of the modules, and named the reason: the Django trap was
 that a framework existed, it was that `contrib.auth` was **built on** it, and so could
 never be lifted out. A module built on web-base would inherit that fate exactly.
 
+**Amended 2026-09-22, when the first host asked: Integrant is used, not imposed.** One
+optional namespace, `dev.arkaitz.auth-base.integrant`, ships one key; nothing else may
+load it, and a scan enforces that, because an illegal require compiles, loads and passes
+every other test. A host that wires by hand calls `ceremony` and loads neither the
+namespace nor the library. The rule above is unchanged in what it was protecting — the
+module is still liftable, still knows no host, and still builds on no framework — and
+the amendment is narrow on purpose: Integrant is a wiring convention the other two
+modules of this set already ship a key for, and a host that had to write that key itself
+for one of three would be paying for the asymmetry rather than for the independence.
+
+**It is not free, and the price is named rather than waved through.** The closure that
+reaches every consumer grows by Integrant and its own `weavejester/dependency`, whether
+they wire with it or not. §15 records the decision; `structure_test` holds both the scan
+that confines the require and the one that resolves a consumer's real classpath and
+refuses anything nobody decided.
+
 Ring is the lingua franca. A handler, a request map, a session map and a store
 protocol are all this module needs, and every Clojure web application in the world
 speaks them. A web-base host wires it in five lines:
@@ -327,6 +343,7 @@ unchanged.
 | | |
 |---|---|
 | Depends on `ring/ring-core` only, never on web-base | §3, 2026-09-09 |
+| Integrant is used, not imposed: one optional namespace, one key | §3, 2026-09-22, first host that asked |
 | The ceremony is the contract; the method is an implementation | §6, 2026-09-09 |
 | Storage is a port with an in-memory default | §7, 2026-09-09 |
 | Revocation is a generation on the subject, not an index in the store | §10, 2026-09-09 |
