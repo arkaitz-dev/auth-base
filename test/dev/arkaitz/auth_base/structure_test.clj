@@ -29,8 +29,12 @@
 
 (def ^:private allowed-roots
   "Everything the module may require. `clojure` is the language, `ring` is the
-  one dependency, and the module's own namespaces are its own."
-  #{"clojure" "ring" "dev.arkaitz.auth-base"})
+  one dependency, and the module's own namespaces are its own. `integrant` is
+  SPEC §3's optional key, and **only `dev.arkaitz.auth-base.integrant` may name
+  it** — a boundary this scan cannot express, because it asks the same question
+  of every file, so a scan of its own says it below (added 2026-09-22, when the
+  first host asked)."
+  #{"clojure" "ring" "integrant" "dev.arkaitz.auth-base"})
 
 (defn- src-root
   "The src directory, located through the classpath so a different working
@@ -48,12 +52,36 @@
                    :when (and (.isFile f) (re-find #"\.clj[cs]?$" (.getName f)))]
                [(str/replace (subs (.getPath f) prefix) File/separator "/") f]))))
 
-(defn- read-all-forms [^File file]
-  (with-open [rdr (LineNumberingPushbackReader. (StringReader. (str/replace (slurp file) "::" ":")))]
+(defn- forms-in
+  "Every form in `text`. Split from `read-all-forms` so the scans below can be
+  given a literal string as their own control: a scan nobody has watched find
+  something is a scan that may be finding nothing anywhere."
+  [^String text]
+  (with-open [rdr (LineNumberingPushbackReader. (StringReader. (str/replace text "::" ":")))]
     (binding [*read-eval* false *data-readers* {} *default-data-reader-fn* tagged-literal]
       (loop [forms []]
         (let [form (read {:read-cond :preserve :eof ::eof} ^PushbackReader rdr)]
           (if (= ::eof form) forms (recur (conj forms form))))))))
+
+(defn- read-all-forms [^File file] (forms-in (slurp file)))
+
+(defn- walk-with-tags
+  "Every node, plus the `:tag` of any node that carries one, and the insides of
+  the two shapes `tree-seq` stops at because neither is a collection: a tagged
+  literal — `#ig/ref :x` — whose tag and wrapped form would both be invisible,
+  and a reader conditional, which this file reads with `:preserve` rather than
+  `:allow`. Preserving is the stricter choice and the reason to descend by hand:
+  `:allow` would show only the branch this JVM takes, and a require hidden in a
+  `:cljs` branch is still a dependency of the sources."
+  [form]
+  (mapcat (fn [node]
+            (concat [node]
+                    (some-> node meta :tag list)
+                    (when (instance? clojure.lang.TaggedLiteral node)
+                      (cons (:tag node) (walk-with-tags (:form node))))
+                    (when (instance? clojure.lang.ReaderConditional node)
+                      (walk-with-tags (:form node)))))
+          (tree-seq coll? seq form)))
 
 (defn- required-namespaces
   "Every namespace an `ns` form loads, prefix lists expanded. A prefix list is
@@ -109,10 +137,16 @@
                                                 [clojure.string :as str]
                                                 [reitit.ring :as ring]))))))
               "positive control: a foreign require is seen")
-          (is (= '[integrant.core]
+          ;; Component, not Integrant, since 2026-09-22: Integrant is now an
+          ;; allowed root and would make this control pass for the wrong reason.
+          ;; The replacement has to be a library this module will never take,
+          ;; and the one lifecycle framework it has chosen against is exactly
+          ;; that — while still being a prefix list, which is the shape this
+          ;; control exists to prove the extractor sees through.
+          (is (= '[com.stuartsierra.component]
                  (vec (remove #(allowed-roots (root-of %))
                               (required-namespaces
-                               '(ns x (:require [integrant [core :as ig]]))))))
+                               '(ns x (:require [com.stuartsierra [component :as c]]))))))
               "positive control: and so is one hidden in a prefix list"))
         (let [violations (vec (for [[path file] (sort files)
                                     :let [forms (read-all-forms file)]
@@ -127,6 +161,84 @@
                    " — found " (pr-str violations)))
           (is (= [] runtime)
               (str "a load outside the ns form would evade the scan above: " (pr-str runtime))))))))
+
+(def ^:private integrant-exempt-path "dev/arkaitz/auth_base/integrant.clj")
+(def ^:private integrant-exempt-ns 'dev.arkaitz.auth-base.integrant)
+
+(defn- integrant-name?
+  "A name that ties a source to Integrant: one in `integrant` or `integrant.*`,
+  the tag of an `#ig/…` literal, or the exempt namespace itself — requiring that
+  namespace from anywhere else is how Integrant stops being optional and starts
+  being imposed."
+  [x]
+  (let [hit? (fn [s] (and s (or (= s "integrant") (str/starts-with? s "integrant."))))]
+    (and (or (symbol? x) (keyword? x))
+         (boolean (or (hit? (namespace x))
+                      (hit? (name x))
+                      ;; Only in namespace position: `#ig/ref` and `ig/init-key`
+                      ;; are theirs, while a bare `ig` is a name anyone may bind,
+                      ;; and a scan that reds on one reports a local rather than
+                      ;; a dependency.
+                      (= "ig" (namespace x))
+                      (= (str integrant-exempt-ns) (namespace x))
+                      (= (str integrant-exempt-ns) (str x)))))))
+
+(defn- integrant-in [text]
+  (vec (distinct (filter integrant-name? (mapcat walk-with-tags (forms-in text))))))
+
+(deftest only-the-integrant-namespace-references-integrant
+  ;; SPEC §3: Integrant is used, not imposed. A require of it anywhere else
+  ;; compiles, loads and passes every other test in this suite — this scan is
+  ;; the only signal there will ever be, which is why `allowed-roots` lets
+  ;; `integrant` through and leaves the boundary to be drawn here.
+  (testing "positive controls: each shape a reference arrives in"
+    (is (= '[integrant.core] (integrant-in "(ns x (:require [integrant.core :as ig]))"))
+        "a plain require, which is what names them — an alias alone is a name anyone may bind")
+    (is (= '[integrant] (integrant-in "(ns x (:require [integrant [core :as ig]]))"))
+        "a vector prefix-list require, where the prefix is what the reader leaves")
+    (is (= '[integrant.core] (integrant-in "(ns x #?(:clj (:require [integrant.core])))"))
+        "a require inside a reader conditional")
+    (is (= '[integrant.core/init] (integrant-in "(ns x) (defn f [c] (integrant.core/init c))"))
+        "a fully qualified call with no require")
+    (is (= [:integrant.core/system] (integrant-in "(ns x) (def k :integrant.core/system)"))
+        "a keyword of theirs")
+    (is (= '[ig/ref] (integrant-in "(ns x) (def c {:a #ig/ref :b})"))
+        "the tag of a literal, which is not a collection and hides what it wraps")
+    (is (= [integrant-exempt-ns] (integrant-in (str "(ns x (:require [" integrant-exempt-ns "]))")))
+        "and the exempt namespace named from elsewhere, which imposes it just as surely"))
+  (testing "controls: what must not fire"
+    (is (= [] (integrant-in "(ns x (:require [dev.arkaitz.auth-base :as auth]))"))
+        "this module itself")
+    (is (= [] (integrant-in "(ns x) (def s \"an integrant part of the whole\")"))
+        "the English word in a string")
+    (is (= [] (integrant-in "(ns x) (defn ignore [_] nil)"))
+        "a name that merely starts with those letters")
+    (is (= [] (integrant-in "(ns x) (defn f [{:keys [ig]}] ig)"))
+        "a local someone called ig, which is a binding and not a dependency"))
+  (let [root (src-root)]
+    (is (some? root) (str anchor-path " is not on the classpath as a file"))
+    (when root
+      (let [files (source-files root)]
+        (testing "preconditions: the scan reads the sources, and the exemption is what makes it green"
+          (is (contains? files anchor-path)
+              (str "precondition: " anchor-path " not among " (sort (keys files))))
+          (is (contains? files integrant-exempt-path)
+              (str "precondition: the exempt file is where its name says; if it moved, this scan"
+                   " has been exempting nothing — found " (sort (keys files))))
+          ;; Filtered rather than spelled out: what this proves is that the scan
+          ;; reads the file on disk and sees integrant there. Pinning every name
+          ;; the file happens to contain would red on any honest edit to it,
+          ;; which is coupling rather than signal.
+          (is (= '[integrant.core] (filterv #{'integrant.core}
+                                            (integrant-in (slurp (get files integrant-exempt-path)))))
+              (str "the exempt file does reference integrant, read from disk: a scan that found"
+                   " nothing there would be finding nothing anywhere")))
+        (is (= [] (vec (for [[path file] (sort (dissoc files integrant-exempt-path))
+                             offender    (integrant-in (slurp file))]
+                         [path offender])))
+            (str "SPEC §3: Integrant is used, not imposed — only " integrant-exempt-ns
+                 " may name it, and a require of it elsewhere compiles, loads and passes every"
+                 " other test"))))))
 
 (deftest the-module-names-no-file-of-its-own
   ;; SPEC §12's trap: a library that knows a file name can look for it, and

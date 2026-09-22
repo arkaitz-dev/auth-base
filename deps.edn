@@ -1,11 +1,22 @@
 {:paths ["src"]
 
- ;; SPEC §3: ring-core and nothing else. Ring is the lingua franca — a handler, a
- ;; request map, a session map and a store protocol — and depending on anything
- ;; more is how a module stops being liftable. `dependencies_test.clj` enforces
- ;; this by reading every ns form under src/.
+ ;; SPEC §3: ring-core, and Integrant only for the one optional namespace that
+ ;; ships its key. Ring is the lingua franca — a handler, a request map, a
+ ;; session map and a store protocol — and depending on anything more is how a
+ ;; module stops being liftable. `structure_test.clj` enforces both halves by
+ ;; reading every ns form under src/: what may be required at all, and which
+ ;; single file may name Integrant.
  :deps {org.clojure/clojure {:mvn/version "1.12.5"}
-        ring/ring-core      {:mvn/version "1.15.5"}}
+        ring/ring-core      {:mvn/version "1.15.5"}
+        ;; SPEC §3 and §15: used, not imposed. Required only by
+        ;; dev.arkaitz.auth-base.integrant, which ships one key's init-key —
+        ;; and no halt-key!, because a ceremony owns nothing to close. Nothing
+        ;; else may load it, and a scan enforces that, because an illegal
+        ;; require compiles, loads and passes every other test. Added
+        ;; 2026-09-22, when the first host asked for it; its whole closure,
+        ;; integrant plus weavejester/dependency, reaches every consumer, and
+        ;; that cost is what the dependency-closure test exists to keep visible.
+        integrant/integrant {:mvn/version "1.0.1"}}
 
  :aliases
  {:test {:extra-paths ["test" "build" "harness/src" "harness/test" "demo/src" "demo/resources" "demo/test"]
