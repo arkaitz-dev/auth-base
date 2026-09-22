@@ -1,19 +1,31 @@
 (ns dev.arkaitz.auth-base.structure-test
-  "Two properties that no behavioural test can see, so a scan is the only
-  signal either of them will ever produce.
+  "Four properties that no behavioural test can see, so a scan is the only
+  signal any of them will ever produce.
 
   **The dependency (SPEC §3).** `auth-base` depends on `ring/ring-core` and
-  nothing else. The reason is not tidiness: a module built on web-base could
-  only ever be lifted with web-base attached, which is exactly what made
-  Django's `contrib.auth` impossible to extract and the reason this repository
-  is separate. Any library added to `deps.edn` would compile, load and pass
-  every other test in this suite.
+  nothing else, save the Integrant that one optional namespace loads. The reason
+  is not tidiness: a module built on web-base could only ever be lifted with
+  web-base attached, which is exactly what made Django's `contrib.auth`
+  impossible to extract and the reason this repository is separate. Any library
+  added to `deps.edn` would compile, load and pass every other test in this
+  suite.
+
+  **Which single file may name Integrant.** The scan above asks the same
+  question of every file and so cannot express an exemption; a scan of its own
+  does, and asserts both that no other file names it and that the exempt one
+  does — a scan that found nothing there would be finding nothing anywhere.
+
+  **What a consumer actually receives.** The `ns` scan reads what `src` names.
+  A transitive dependency is what nobody writes and everybody receives, so the
+  last test here resolves a consumer's real classpath in a subprocess and
+  requires every jar on it to have been decided, by name, with its reason.
 
   **The random generator.** A `SecureRandom` in a var root works perfectly on
   a JVM and has no symptom there; GraalVM's `native-image` bakes the instance
   into the binary with its seed, and every deployment of that binary then
   mints the same tokens. Only the shape of the var root can say."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             ;; required for the compile-time var reference below; the scan
@@ -23,7 +35,9 @@
            [java.io File PushbackReader StringReader]
            [java.lang.reflect Field Modifier]
            [java.security SecureRandom]
-           [java.util IdentityHashMap]))
+           [java.util IdentityHashMap]
+           [java.util.concurrent TimeUnit]
+           [java.util.regex Pattern]))
 
 (def ^:private anchor-path "dev/arkaitz/auth_base.clj")
 
@@ -323,3 +337,85 @@
       "the root is a delay, so an image holds the box and not the generator")
   (is (= SecureRandom (class (deref (var-get #'dev.arkaitz.auth-base.token/random))))
       "and forcing it yields a SecureRandom"))
+
+;; --- what a consumer actually receives ------------------------------------
+
+(def ^:private accepted-closure
+  "Every library a consumer is accepted to receive, with the reason. A new
+  arrival is a decision, taken here with its reason written beside it; nothing
+  arrives by a version bump alone. The `ns` scan above reads what `src` names,
+  which is a different question: this one reads what a consumer's classpath
+  holds, and a transitive dependency is something nobody writes and everybody
+  receives."
+  '{org.clojure/clojure                          "the language"
+    org.clojure/spec.alpha                       "the language's own dependency"
+    org.clojure/core.specs.alpha                 "the language's own dependency"
+    ring/ring-core                               "SPEC §3: the one dependency"
+    ring/ring-codec                              "ring-core's"
+    org.ring-clojure/ring-core-protocols         "ring-core's"
+    org.ring-clojure/ring-websocket-protocols    "ring-core's"
+    crypto-random/crypto-random                  "ring-core's, for its session keys"
+    crypto-equality/crypto-equality              "ring-core's, for comparing them in constant time"
+    commons-io/commons-io                        "ring-core's, through its multipart machinery"
+    commons-codec/commons-codec                  "ring-core's, the same"
+    org.apache.commons/commons-fileupload2-core  "ring-core's multipart handling"
+    ;; Decided 2026-09-22, when the first host asked to wire with Integrant
+    ;; (SPEC §3, §15). It reaches every consumer, which is the cost of the one
+    ;; key `dev.arkaitz.auth-base.integrant` ships, and db-base and web-base pay
+    ;; the same cost for the same reason. A consumer that does not use Integrant
+    ;; loads neither.
+    integrant/integrant                          "SPEC §3's optional key, loaded only by dev.arkaitz.auth-base.integrant"
+    weavejester/dependency                       "integrant's"})
+
+(defn- maven-entry-pattern [lib]
+  (let [group    (namespace lib)
+        artifact (name lib)]
+    (re-pattern (str "/" (Pattern/quote (str/replace group "." "/")) "/" (Pattern/quote artifact)
+                     "/[^/]+/" (Pattern/quote artifact) "-[^/]*\\.jar$"))))
+
+(defn- consumer-classpath
+  "The classpath a consumer of this project resolves: no alias, no user
+  configuration. Bounded, because a subprocess is a blocking call."
+  [^File project-root]
+  ;; stderr is inherited, not merged: the CLI reports downloads there, and
+  ;; merged into the classpath they would read as entries nobody accepted.
+  (let [process (try (.start (doto (ProcessBuilder. ^java.util.List ["clojure" "-Srepro" "-Spath"])
+                               (.directory project-root)
+                               (.redirectError java.lang.ProcessBuilder$Redirect/INHERIT)))
+                     (catch java.io.IOException e e))]
+    (if (instance? Throwable process)
+      {:error (str "the clojure CLI could not be run: " (ex-message process))}
+      (let [^Process process process
+            drained (future (slurp (.getInputStream process)))]
+        (if-not (.waitFor process 120 TimeUnit/SECONDS)
+          (do (.destroyForcibly process)
+              {:error "clojure -Srepro -Spath did not finish within 120 s"})
+          (let [output (deref drained 10000 ::stalled)]
+            (if (and (not= ::stalled output) (zero? (.exitValue process)))
+              {:entries (str/split (str/trim output) #":")}
+              {:error (str "clojure -Srepro -Spath exited " (.exitValue process)
+                           " (its stderr is in the test output above): " output)})))))))
+
+(deftest nothing-reaches-a-consumer-that-has-not-been-decided-here
+  (let [project-root (.getParentFile ^File (src-root))
+        deps         (edn/read-string (slurp (io/file project-root "deps.edn")))
+        declared     (set (keys (:deps deps)))
+        {:keys [entries error]} (consumer-classpath project-root)
+        lib-of       (fn [entry] (first (for [lib (keys accepted-closure)
+                                              :when (re-find (maven-entry-pattern lib) entry)]
+                                          lib)))]
+    (is (= '#{org.clojure/clojure ring/ring-core integrant/integrant} declared)
+        (str "SPEC §3: deps.edn declares the language, ring-core, and the Integrant that only"
+             " the optional namespace may load — found " (sort declared)))
+    (when (is (nil? error) (str "precondition: the consumer's classpath was resolved — " error))
+      (let [received (set (keep lib-of entries))]
+        (testing "controls: the resolution is a consumer's, not this test run's"
+          (is (every? received declared)
+              (str "every declared dependency is recognised on it: " (sort received)))
+          (is (contains? received 'weavejester/dependency)
+              "a transitive dependency is received, so an empty remainder below means something")
+          (is (not-any? #(str/includes? % "/dev/arkaitz/web-base/") entries)
+              "web-base is on :test and not here, so no alias was applied"))
+        (is (= [] (vec (remove #(or (contains? (set (:paths deps)) %) (lib-of %)) entries)))
+            (str "SPEC §3: arrived on every consumer's classpath and is not accepted — decide it,"
+                 " with its reason, in accepted-closure above"))))))
