@@ -82,6 +82,14 @@
     :else (fail! ":rate-limit must be a map of options or a function of one key"
                  [:rate-limit] rate-limit)))
 
+(defn- submitted?
+  "Whether the form field holds something `issue!` will accept. Deliberately not
+  shared with the ceremony's own check, though the two agree: that one guards a
+  contract and refuses, this one decides what to render, and folding them
+  together would make a page's wording a reason to loosen a library's rule."
+  [v]
+  (and (string? v) (not (str/blank? v))))
+
 (defn handlers
   "The four handlers, as a map. Mount them yourself, or hand the same options
   to `routes`.
@@ -119,7 +127,8 @@
         allow?       (limiter ceremony rate-limit)
         redeem-path  (get-in ceremony [:link :redeem-path])
         sent         (no-store (response/redirect (str login-path "?ab=sent") :see-other))
-        spent        (no-store (response/redirect (str login-path "?ab=spent") :see-other))]
+        spent        (no-store (response/redirect (str login-path "?ab=spent") :see-other))
+        blank        (no-store (response/redirect login-path :see-other))]
     {:paths {:login login-path :logout logout-path :redeem (str redeem-path "/:token")}
 
      :form
@@ -137,8 +146,17 @@
              (response/status 429)
              (response/header "Retry-After" "60")
              no-store)
-         (do (ceremony/issue! ceremony (get (:form-params request) field))
-             sent)))
+         (let [identifier (get (:form-params request) field)]
+           (if (submitted? identifier)
+             (do (ceremony/issue! ceremony identifier)
+                 sent)
+             ;; Nobody typed anything, or the field was never there — a POST
+             ;; made by hand, or a `:field` that does not match the form. Back
+             ;; to the page in its ordinary state: `issue!` refuses all three
+             ;; shapes, and letting that throw would turn an empty submission
+             ;; into a 500. No new view state is invented for it, because there
+             ;; is nothing to tell the person that the empty form does not.
+             blank))))
 
      :redeem
      (fn [request]

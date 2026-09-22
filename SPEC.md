@@ -128,6 +128,37 @@ stronger — has a partial answer in §12 and no full one yet.
 
 `issue!` returns nothing on purpose. See §11.
 
+**It takes a string, and refuses anything else** (decided with the user 2026-09-22, when
+`:on-unknown` below first made this value reach a host function whose job is to create
+accounts). `wrap-params` hands a host nil for an absent form field and a vector for a
+repeated one; the default `normalise` puts both through `str`, so without the check a
+challenge is stored under nil or under the printed spelling of two addresses at once,
+`deliver!` is handed the same, and the host is asked to make an account of it. The
+refusal is about the **type** and never the value, so it asks the store nothing and §11
+is untouched: there is still no branch here on whether an address is known.
+
+**How an account comes into being, since the three calls do not say.** `redeem!` asks
+the store who an identifier belongs to, and `subject-for` **must not create** — an
+account is the host's act, never a side effect of someone typing an address. That left
+open registration unbuildable: the token is spent, the identifier is attested, and the
+host was told nothing. The ceremony therefore takes an optional `:on-unknown`, a
+function of the identifier returning a subject or nil, asked **only** when no subject
+exists and **only** for a redemption that passed every gate. A host without the key
+behaves exactly as every host did before it existed.
+
+It is asked at redemption and nowhere else, which is what keeps §11 intact: the one
+moment the host may act on an address is the moment a secret only its holder could hold
+has already vouched for it. `issue!` still asks nothing and still branches on nothing.
+
+**The obligation that comes with it, and it is the host's.** What the hook returns must
+be `=` to what `subject-for` answers for that identifier from then on, and to what
+`revoke!` is called with. The module cannot check this without asking the store a
+question it has already answered, and the cost of breaking it is silent and total: the
+session freezes the returned value, every later request re-reads the generation keyed on
+*that* value, and a revocation moves the generation of the value the store answers with.
+Two keys, so the session born at registration compares 0 against 0 for ever and **§10's
+revocation can never end it**. Return the row, not the row plus a flag saying it was new.
+
 ## 7 · Storage is a port
 
 The same move Ring made for sessions and web-base repeated for its own: **do not
@@ -282,7 +313,10 @@ unchanged.
 **Out**
 
 - authorisation, in every form, including roles and scopes;
-- the person, the account lifecycle beyond the credential itself, and any schema;
+- the person, the account lifecycle beyond the credential itself, and any schema —
+  `:on-unknown` (§6) is not an exception to this but a consequence of it: the module
+  names the one safe moment to create an account and hands the act to the host, rather
+  than learning what an account is;
 - mail transport;
 - anything that fails §4.
 
@@ -300,6 +334,7 @@ unchanged.
 | The credential is a unit of its own, with no person behind it | §5, first consumer's log |
 | Identical response and timing for known and unknown addresses | §11, first consumer's log |
 | The bootstrap list is data passed in, never a file it finds | §12 |
+| `subject-for` never creates; a host registers through `:on-unknown`, at redemption | §6, 2026-09-22, first host that asked |
 
 **Open**, with the reason each is still open:
 
@@ -310,9 +345,9 @@ unchanged.
   second attempt on a spent link says, what a failed delivery shows the person.
 - **The second factor**, named as in scope by the first consumer and designed nowhere.
 - **The rate limit's shape** — by address, by source, or both.
-- **The account lifecycle**: invitation, address change, deactivation.
-- **Whether `subject-for` may create.** Today's reading is that it must not: creating an
-  account is the host's act, not a side effect of someone typing an address.
+- **The account lifecycle** past its first act: invitation, address change,
+  deactivation. How an account *comes into being* is answered in §6, by `:on-unknown`,
+  and nothing after that is.
 
 ## 16 · The risk in building this now
 

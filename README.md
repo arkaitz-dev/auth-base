@@ -150,7 +150,7 @@ its own router — or under none, as `harness/` does with a `case` over the URI.
 ## The three acts
 
 ```clojure
-(auth/issue!  ceremony identifier)   ; => nil, always, whatever the identifier is
+(auth/issue!  ceremony identifier)   ; => nil, always, whatever the address is
 (auth/redeem! ceremony token)        ; => a subject, or nil
 (auth/revoke! ceremony subject)      ; => nil, and every session of theirs dies
 ```
@@ -160,6 +160,12 @@ is known. That is not an optimisation of the anti-enumeration rule, it is the wh
 it: there is no branch to time, because the question is only asked at redemption, when
 the answer is already in the hands of whoever holds the secret. A return value that
 distinguished the two would put the enumeration back one layer up.
+
+**The identifier must be a string.** `wrap-params` gives you nil for a form field that
+was absent and a vector for one that was sent twice, and both would otherwise be stored
+as a challenge, handed to your `deliver!`, and — once you configure `:on-unknown` —
+offered to you as somebody to create an account for. `issue!` refuses them. That is a
+fact about the type, asks the store nothing, and leaves the rule above intact.
 
 **A delivery failure is not an authentication failure.** If your `deliver!` throws, the
 caller is told nothing — telling them would tell them something about the address — the
@@ -204,7 +210,13 @@ expiry is the ceremony's policy. It consumes an expired challenge too, so a spen
 cannot be retried.
 
 `subject-for` must not create. An account comes into being by your act, never as a side
-effect of somebody typing an address.
+effect of somebody typing an address — and **`:on-unknown` is where you perform that
+act**: the ceremony asks it at redemption, once the token has vouched for the address,
+and nowhere else. What it returns must be `=` to what `subject-for` answers for that
+identifier afterwards and to what you pass `revoke!`. Return the row you just wrote,
+not the row plus a flag saying it was new: the session freezes this value and re-reads
+its revocation generation on every request, so a value the store will never answer with
+is a session no revocation can end.
 
 ## The bootstrap
 
@@ -232,6 +244,7 @@ something to name when there is no local identity at all.
 | `:clock` | `(fn [])` → epoch milliseconds (default the system clock) |
 | `:bootstrap` | identifiers that hold no record and may still enter |
 | `:normalise` | `(fn [identifier])` → canonical form (default trim + lower-case) |
+| `:on-unknown` | `(fn [identifier])` → a subject, or nil. How you answer a redemption by somebody you have no record of. Absent, there is no answer and the redemption fails |
 
 `auth/handlers` and `auth/routes` — likewise:
 

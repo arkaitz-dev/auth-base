@@ -55,7 +55,9 @@
   ceremony/ceremony)
 
 (def issue!
-  "`(issue! ceremony identifier)` → nil, always, whatever the identifier is."
+  "`(issue! ceremony identifier)` → nil, always, whatever the address is. The
+  identifier must be a string; anything else is refused, which is a fact about
+  the type and never about whether the address is known."
   ceremony/issue!)
 
 (def redeem!

@@ -130,6 +130,60 @@
     (is (= spent-redirect (redeem (mock/request :get (str "/entrar/" token))))
         "and a token that expired between the sending and the click is spent")))
 
+(deftest an-empty-form-goes-back-to-the-page--never-to-a-500-and-never-to-the-store
+  ;; `issue!` refuses nil, "" and a vector, so without a guard here an empty
+  ;; submission — which every browser form can produce — would leave the
+  ;; ceremony throwing and the host rendering a server error at somebody who
+  ;; merely pressed the button too early.
+  (let [{:keys [issue log deliveries]} (fixture {:subjects {"ada@x.test" {:id 1}}})
+        submit (fn [form-params]
+                 (reset! log [])
+                 (issue (assoc (mock/request :post "/login")
+                               :form-params form-params
+                               :remote-addr "10.0.0.1")))]
+    (let [ok (submit {"identifier" "ada@x.test"})]
+      (is (= 303 (:status ok))
+          "control: an ordinary submission is accepted")
+      (is (= "/login?ab=sent" (get-in ok [:headers "Location"]))
+          "control: and lands on the page that says a link went out")
+      (is (= [:put-challenge!] (support/calls log))
+          "control: and reached the store, so the empty logs below mean something"))
+    (doseq [[label form-params] [["an empty field"     {"identifier" ""}]
+                                 ["whitespace only"    {"identifier" "   "}]
+                                 ["no field at all"    {}]
+                                 ["a repeated field, as wrap-params yields it"
+                                  {"identifier" ["ada@x.test" "someone@else.test"]}]]]
+      (let [response (submit form-params)]
+        (is (= 303 (:status response))
+            (str "answered with a redirect rather than a thrown 500: " label))
+        (is (= "/login" (get-in response [:headers "Location"]))
+            (str "back to the page in its ordinary state, saying nothing that was not asked: " label))
+        (is (= [] @log)
+            (str "and the store was never touched, so no challenge exists under that key: " label))))
+    (is (= 1 (count @deliveries))
+        "and exactly one link was ever delivered — the control's")))
+
+(deftest a-subject-of-false-is-a-subject-to-the-redeem-handler-too
+  ;; SPEC §17 says `false` is a subject module-wide, and `redeem!` goes to real
+  ;; trouble to carry one back intact. One layer up, `(if subject …)` where
+  ;; `(if (some? subject) …)` belongs turns that person into a spent link: they
+  ;; hold a valid token, the ceremony answers with them, and the page tells them
+  ;; the link is used up. Nothing else in this suite has a false subject in it,
+  ;; so without this the narrowing is invisible — and `:on-unknown` has just
+  ;; added a second place a false subject can come from.
+  (let [{:keys [redeem] :as f} (fixture {:subjects {"ada@x.test" {:id 1} "f@x.test" false}})
+        good   (redeem (mock/request :get (str "/entrar/" (issued! f "ada@x.test"))))
+        falsey (redeem (mock/request :get (str "/entrar/" (issued! f "f@x.test"))))]
+    (is (= {:id 1} (:ab/subject (:session good)))
+        "control: an ordinary subject establishes a session, so the two below compare like with like")
+    (is (contains? falsey :session)
+        (str "a subject of false establishes a session at all — the spent page carries no :session "
+             "key whatsoever, which is what tells the two responses apart"))
+    (is (= false (:ab/subject (:session falsey)))
+        "and the session carries false, exactly the value the store answered with")
+    (is (= 0 (:ab/generation (:session falsey)))
+        "with a revocation generation like anybody else, so they can be revoked like anybody else")))
+
 (deftest the-token-is-read-from-the-uri-and-never-from-a-routers-path-parameters
   (let [{:keys [redeem log] :as f} (fixture {:subjects {"ada@x.test" {:id 1} "bob@x.test" {:id 2}}})
         ada (issued! f "ada@x.test")

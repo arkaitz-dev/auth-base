@@ -25,7 +25,7 @@
 (def ^:private default-ttl-ms (* 15 60 1000))
 
 (def ^:private ceremony-keys
-  #{:store :deliver! :link :ttl-ms :clock :bootstrap :normalise})
+  #{:store :deliver! :link :ttl-ms :clock :bootstrap :normalise :on-unknown})
 
 (defn- fail! [message config-key value]
   (throw (ex-info (str "auth-base ceremony: " message)
@@ -63,8 +63,12 @@
     :ttl-ms     how long a challenge lives (default 15 minutes)
     :clock      (fn []) → epoch milliseconds (default the system clock)
     :bootstrap  identifiers that hold no record and may still enter (SPEC §12)
-    :normalise  (fn [identifier]) → the canonical form (default trim + lower-case)"
-  [{:keys [store deliver! link ttl-ms clock bootstrap normalise] :as config}]
+    :normalise  (fn [identifier]) → the canonical form (default trim + lower-case)
+    :on-unknown (fn [identifier]) → a subject, or nil — how this host answers a
+                redemption by someone it has no record of. Absent, there is no
+                such answer and the redemption fails, which is what every host
+                before the first one that asked for this key wanted."
+  [{:keys [store deliver! link ttl-ms clock bootstrap normalise on-unknown] :as config}]
   ;; A key nobody reads is worse than a key nobody wrote: it is configuration
   ;; the host believes is in force. `:rate-limit` belongs to the handlers, and
   ;; passing it here silently bought nothing at all until this refused it.
@@ -85,25 +89,47 @@
     (fail! ":bootstrap must be a collection of identifiers, passed in as data" [:bootstrap] bootstrap))
   (when-not (or (nil? normalise) (ifn? normalise))
     (fail! ":normalise must be a function of one identifier" [:normalise] normalise))
+  (when-not (or (nil? on-unknown) (ifn? on-unknown))
+    (fail! ":on-unknown must be a function of one identifier" [:on-unknown] on-unknown))
   (let [normalise (or normalise normalise-default)]
-    {:store     store
-     :deliver!  deliver!
-     :link      link
-     :ttl-ms    (or ttl-ms default-ttl-ms)
-     :clock     (or clock #(System/currentTimeMillis))
-     :bootstrap (into #{} (map normalise) bootstrap)
-     :normalise normalise}))
+    {:store      store
+     :deliver!   deliver!
+     :link       link
+     :ttl-ms     (or ttl-ms default-ttl-ms)
+     :clock      (or clock #(System/currentTimeMillis))
+     :bootstrap  (into #{} (map normalise) bootstrap)
+     :normalise  normalise
+     :on-unknown on-unknown}))
 
 (defn- link-for [{:keys [base-url redeem-path]} token]
   (str base-url redeem-path "/" token))
 
 (defn issue!
-  "Records a challenge for `identifier` and hands the link to `deliver!`.
+  "Records a challenge for `identifier`, a string, and hands the link to
+  `deliver!`.
 
-  Returns nil. Always, whatever the identifier is, and that is the point: a
-  return value that distinguished a known address from an unknown one would
-  put the enumeration back one layer up, in the handler that reads it."
+  Returns nil. Always, whatever the address is, and that is the point: a return
+  value that distinguished a known address from an unknown one would put the
+  enumeration back one layer up, in the handler that reads it. **A non-string
+  identifier is refused**, which is a different question from whether an address
+  is known and asks nothing of the store — see the comment on the check."
   [{:keys [store deliver! link ttl-ms clock normalise]} identifier]
+  ;; Refused before anything is minted, stored or delivered (decided with the
+  ;; user 2026-09-22, when `:on-unknown` first made this value reach a host
+  ;; function whose job is to create accounts). The three shapes a real form
+  ;; produces: an absent field arrives as nil, a repeated one as a vector, and
+  ;; an empty one as "". The default `normalise` puts the first two through
+  ;; `str` and leaves the third alone, so without this a host stores a challenge
+  ;; keyed on nil, on the printed spelling of two addresses at once, or on the
+  ;; empty string, hands `deliver!` the same, and is then asked to make an
+  ;; account of it. It refuses the SHAPE and never the value — no store is
+  ;; consulted and no branch here depends on whether an address is known, so
+  ;; §11 is untouched.
+  (when-not (and (string? identifier) (not (str/blank? identifier)))
+    (throw (ex-info "auth-base: issue! takes an identifier that is a non-blank string"
+                    ;; The type and not the value: what a caller mis-wired may
+                    ;; be a whole request map.
+                    {:identifier-type (some-> identifier class .getName)})))
   (let [identifier (normalise identifier)
         token      (token/mint)]
     (store/put-challenge! store token identifier (+ (clock) ttl-ms))
@@ -139,12 +165,39 @@
   "Spends `token` and returns the subject it attests, or nil.
 
   The challenge is consumed before it is judged: an expired token is spent by
-  the attempt that found it expired, so there is no second look at it."
-  [{:keys [store clock] :as ceremony} token]
+  the attempt that found it expired, so there is no second look at it.
+
+  **`:on-unknown` is asked last, and only here.** `subject-for` must never
+  create — an account comes into being by the host's act — and this is the one
+  moment at which the host can perform that act safely: the identifier has just
+  been attested by a secret only its holder could hold, so registering it here
+  gives away nothing that `issue!` refused to. A host without the key behaves
+  as every host did before it existed, which is why it is asked for rather than
+  defaulted.
+
+  `if-some`, not `if-let`, for the same reason `subject-of` uses it: `false` is
+  a subject like any other, and a host whose store answers `false` must not be
+  told it has no record and asked to make one.
+
+  **What `:on-unknown` returns must be `=` to what `subject-for` will answer for
+  that identifier from then on, and to what `revoke!` will be called with.** This
+  is the host's to honour and cannot be checked here without asking the store a
+  second question it has already answered. The cost of breaking it is silent and
+  total: `establish` freezes the returned value into the session, every later
+  request re-reads `generation` keyed on *that* value, and a revocation moves the
+  generation of the value the store answers with. Two different keys, so the
+  session born at registration compares 0 against 0 for ever and **no revocation
+  can ever end it** — SPEC §10 defeated on the one path this key creates. A hook
+  that returns the row it just wrote, rather than that row plus a flag saying it
+  was new, is the whole of the discipline."
+  [{:keys [store clock normalise on-unknown] :as ceremony} token]
   (when (token/well-formed? token)
     (when-let [row (store/take-challenge! store token)]
       (when (< (clock) (:ab/expires-at row))
-        (subject-of ceremony (:ab/identifier row))))))
+        (let [identifier (:ab/identifier row)]
+          (if-some [subject (subject-of ceremony identifier)]
+            subject
+            (when on-unknown (on-unknown (normalise identifier)))))))))
 
 (defn generation
   "The subject's current revocation generation, to be carried by the session
