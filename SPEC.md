@@ -203,8 +203,17 @@ reads and then deletes has a window.
 
 **An in-memory implementation ships with the library**, so the harness runs with no
 infrastructure at all — exactly as web-base ships Ring's `cookie-store` so its demo
-needs nothing. `base-db`, when it exists, becomes one implementation of this port and
-never a dependency of this module.
+needs nothing.
+
+**Who writes the JDBC one, settled 2026-09-22 and corrected here.** This paragraph used
+to say `base-db` — the name is `db-base` — and that it would "become one implementation
+of this port". It does not, and it may not: db-base's own third rule is that it may
+implement a port defined by a stable third party, Ring's session store being the
+example, but never one of ours, because an implementation there would bind two of our
+libraries to each other's releases in both directions. **The host writes it**, over the
+datasource db-base already handed it, and that is where the first one now lives. Measured
+so "a page of code" is not a guess: 48 lines for the five methods, plus 81 in the
+namespace they delegate the account half to.
 
 ## 8 · Delivery is a function
 
