@@ -273,7 +273,7 @@ something to name when there is no local identity at all.
 | `:ttl-ms` | how long a challenge lives (default 15 minutes) |
 | `:clock` | `(fn [])` → epoch milliseconds (default the system clock) |
 | `:bootstrap` | identifiers that hold no record and may still enter |
-| `:normalise` | `(fn [identifier])` → canonical form (default trim + lower-case) |
+| `:normalise` | `(fn [identifier])` → canonical form (default trim + lower-case); `(auth/normalise ceremony id)` applies it, for an address the host stores itself |
 | `:on-unknown` | `(fn [identifier])` → a subject, or nil. How you answer a redemption by somebody you have no record of. Absent, there is no answer and the redemption fails |
 
 `auth/handlers` and `auth/routes` — likewise:

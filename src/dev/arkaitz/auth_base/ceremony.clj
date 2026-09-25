@@ -52,6 +52,15 @@
   [identifier]
   (some-> identifier str str/trim str/lower-case))
 
+(defn normalise
+  "`identifier` as this ceremony spells it — the host's `:normalise`, or trim and
+  lower-case — which is the form `issue!`, `subject-of` and `:on-unknown` hand the
+  store. For a host that keeps addresses of its own (an invitation to someone who has
+  not signed in yet, a seeded account): stored this way they match the account the
+  ceremony will ask for, and stored any other way they silently never do."
+  [ceremony identifier]
+  ((:normalise ceremony) identifier))
+
 (defn ceremony
   "Validates the host's configuration and returns the value the three acts
   take. Every failure is raised here, at construction, naming the key — a

@@ -74,6 +74,12 @@
   store's record, or a bootstrap identity when there is none (SPEC §12)."
   ceremony/subject-of)
 
+(def normalise
+  "`(normalise ceremony identifier)` → the identifier as this ceremony spells it
+  before any store sees it: the host's `:normalise`, or trim and lower-case. Store an
+  address of your own this way, or it will not match the account it names."
+  ceremony/normalise)
+
 ;; --- The seam with any Ring host -----------------------------------------
 
 (def subject-fn

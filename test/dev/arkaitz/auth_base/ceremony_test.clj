@@ -12,6 +12,7 @@
   timing is `deliver!`'s, and that is the host's."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.support :as support])
@@ -596,3 +597,27 @@
       (ceremony/revoke! ceremony subject)
       (is (= 3 (ceremony/generation ceremony subject))
           (str "and each revocation advances by exactly one: " label)))))
+
+(deftest normalise-answers-the-exact-form-the-store-and-the-hook-are-handed--default-and-host-rule--through-the-facade
+  ;; The oracle is what the store and the hook were handed, never `normalise` compared
+  ;; with itself or with the rule it was configured with: a host stores an address this
+  ;; way so that it matches what the ceremony will ask the store for, and only the store
+  ;; can say what that was.
+  (let [raw   "  Ada@X.test "
+        token (apply str (repeat 43 "T"))]
+    (doseq [[rule normalise expected] [["the default" nil "ada@x.test"]
+                                       ["a host's own rule" (fn [id] (str (str/trim (str id)) "#host")) "Ada@X.test#host"]]]
+      (let [{:keys [ceremony log inner]} (fixture {:subjects {} :normalise normalise
+                                                   :on-unknown (constantly "minted-by-hook")})
+            n (auth/normalise ceremony raw)]
+        (is (= expected n) (str rule ": normalise, through the facade"))
+        (auth/issue! ceremony raw)
+        (is (= n (nth (first @log) 2)) (str rule ": issue! stored the challenge under exactly that form"))
+        (reset! log [])
+        (auth/subject-of ceremony raw)
+        (is (= [[:subject-for n]] @log) (str rule ": subject-of asked the store for exactly that form"))
+        (store/put-challenge! inner token raw 1500)
+        (reset! log [])
+        (auth/redeem! ceremony token)
+        (is (= [[:take-challenge! token] [:subject-for n] [:on-unknown n]] @log)
+            (str rule ": redeeming a raw row asked the store and the hook for exactly that form"))))))
