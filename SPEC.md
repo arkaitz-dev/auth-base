@@ -293,6 +293,12 @@ not the bar; an observable difference is the defect.
 explicitly, and they belong to whoever authenticates. What the limit is, and whether
 it counts by address or by source, is open.
 
+**A refusal says when to come back, or says nothing.** The shipped limiter's `429`
+carries `Retry-After`: the whole seconds until that source's window reopens, rounded
+up, so a client that waits exactly that long is let in. A host's own limiter answers
+whether and never when, so its `429` carries no `Retry-After` rather than an invented
+one — an invented one is the defect below (§17, 2026-09-25).
+
 ## 12 · The bootstrap
 
 Settled in the first consumer's log, inherited as a general mechanism: the identities
@@ -424,6 +430,23 @@ docstring; a store that returns a bare identifier now fails a test that names it
 - The rate limiter inherits the ceremony's clock. §5 gives the module a clock so expiry
   is testable without waiting, and a limiter reading the wall clock would have left the
   window as the one thing that could still only be tested by sleeping.
+
+**A header that lied, found by the first consumer of all three libraries**
+(2026-09-25). Every refusal of the sign-in POST said `Retry-After: 60`, a literal,
+whatever window the host had set — fifteen minutes in both demos and in db-base's
+`demo-tasks`, so an obedient client retried into the same refusal for up to fourteen
+more. The one test of the header used a 60-second window and refused at its first
+instant, the single configuration where the literal was right. Now:
+
+- `rate-limit/fixed-window-decider` answers `{:allowed? … :retry-after-ms …}`, and
+  `fixed-window` is its `:allowed?`, with its `(fn [key] boolean)` contract unchanged.
+  The decider is **not** a `:rate-limit` value: a map is truthy on every refusal, so
+  passed there the limit would silently vanish. It is not re-exported from
+  `dev.arkaitz.auth-base` either — it exists for the handlers, and a host that wants
+  the delay elsewhere requires `dev.arkaitz.auth-base.rate-limit` knowingly.
+- The handlers build it from the map and derive the header from it. **A host's own
+  function lost its `"60"`** and now gets a `429` with no header: the semantics shift
+  of this fix, recorded where the next reader will look.
 
 **One thing the module was not asked for and is not.** `false` is a subject. web-base
 already says so of the value it receives, and a host whose store answers `false` must

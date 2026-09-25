@@ -286,13 +286,19 @@ something to name when there is no local identity at all.
 | `:after-login` | where a redeemed link lands (default `/`) |
 | `:after-logout` | where a logout lands (default `:login-path`) |
 | `:field` | the form field holding the identifier (default `identifier`) |
-| `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean)`, or absent |
+| `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean)`, or absent — see below for what a refusal answers |
 
 The rate limit is keyed by `:remote-addr` — the **source**, never the address. Counting
 per address would answer differently for one somebody had just asked about, and would
 let anyone spend a known user's allowance and lock them out of their own login. Behind
 a proxy that is the proxy's address unless your stack is told to trust
 `X-Forwarded-For`.
+
+A refused request is a `429` with `Cache-Control: no-store`. Under the map it also
+carries `Retry-After`: the whole seconds until that source's window reopens, rounded
+up, so a client that waits exactly that long gets in. Under your own
+`(fn [key] boolean)` it carries none — your function says whether, not when, and a
+number made up here would send an obedient client straight back into the refusal.
 
 ## The two proofs
 
