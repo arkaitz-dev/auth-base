@@ -26,17 +26,18 @@
   [windows]
   (dissoc windows (clojure.core/key (apply min-key (comp second val) windows))))
 
-(defn fixed-window
-  "A limiter: `(fn [key] true)` while `key` has been seen fewer than `:limit`
-  times in the current `:window-ms`, `(fn [key] false)` after that. The window
-  starts at the first attempt and is not extended by the ones that are refused,
-  so a caller that keeps hammering is let back in on schedule rather than
-  never.
+(defn fixed-window-decider
+  "The limiter below, answering why as well as whether: `(fn [key] {:allowed? bool
+  :retry-after-ms n})`. `:retry-after-ms` is nil when the attempt is allowed, and when it
+  is refused it is how long until `key`'s window reopens — measured from the window's
+  start, which a refusal never moves, so it is the same instant however often the caller
+  asks. It exists for the handlers to turn into `Retry-After`: a number invented there
+  instead sends an obedient client back into the same refusal.
 
-    :limit      attempts allowed per window (required)
-    :window-ms  the window (required)
-    :clock      (fn []) → epoch milliseconds (default the system clock)
-    :max-keys   how many distinct keys are tracked at once (default 10000)"
+  Takes exactly the options of `fixed-window`, refused the same way. **It is not a
+  `:rate-limit` value**: that option takes a `(fn [key] boolean)`, and this answers a
+  map, which is truthy on every refusal — passed there, the limit would silently not
+  exist. Give the handlers the options map instead, and they build this themselves."
   [{:keys [limit window-ms clock max-keys]}]
   (when-not (pos-int? limit)
     (throw (ex-info "auth-base rate limit: :limit must be a positive integer"
@@ -53,17 +54,37 @@
   (let [clock    (or clock #(System/currentTimeMillis))
         max-keys (or max-keys default-max-keys)
         windows  (atom {})]
-    (fn allow? [key]
+    (fn decide [key]
       (let [now (clock)
-            [count* _] (get (swap! windows
-                                   (fn [windows]
-                                     (let [[n start] (get windows key)
-                                           fresh?    (or (nil? start) (<= (+ start window-ms) now))
-                                           windows   (if (and fresh? (<= max-keys (clojure.core/count windows)))
-                                                       (evict windows)
-                                                       windows)]
-                                       (if fresh?
-                                         (assoc windows key [1 now])
-                                         (assoc windows key [(inc n) start])))))
-                            key)]
-        (<= count* limit)))))
+            [count* start] (get (swap! windows
+                                       (fn [windows]
+                                         (let [[n start] (get windows key)
+                                               fresh?    (or (nil? start) (<= (+ start window-ms) now))
+                                               windows   (if (and fresh? (<= max-keys (clojure.core/count windows)))
+                                                           (evict windows)
+                                                           windows)]
+                                           (if fresh?
+                                             (assoc windows key [1 now])
+                                             (assoc windows key [(inc n) start])))))
+                                key)]
+        (if (<= count* limit)
+          {:allowed? true :retry-after-ms nil}
+          {:allowed? false :retry-after-ms (- (+ start window-ms) now)})))))
+
+(defn fixed-window
+  "A limiter: `(fn [key] true)` while `key` has been seen fewer than `:limit`
+  times in the current `:window-ms`, `(fn [key] false)` after that. The window
+  starts at the first attempt and is not extended by the ones that are refused,
+  so a caller that keeps hammering is let back in on schedule rather than
+  never.
+
+    :limit      attempts allowed per window (required)
+    :window-ms  the window (required)
+    :clock      (fn []) → epoch milliseconds (default the system clock)
+    :max-keys   how many distinct keys are tracked at once (default 10000)
+
+  `fixed-window-decider` keeps the same schedule and answers a map that also says when
+  a refused key's window reopens — a different shape, and not a `:rate-limit` value."
+  [opts]
+  (let [decide (fixed-window-decider opts)]
+    (fn allow? [key] (:allowed? (decide key)))))
