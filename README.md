@@ -138,6 +138,32 @@ function calls: a ceremony without routes is a host mounting its own handlers, w
 routes without a ceremony cannot exist, and a second key would hand you a router
 opinion this module does not have.
 
+#### One port, two readers
+
+In development the link's origin and the server's port are one fact, and it is easy to
+move one without the other: every link then points at a door nobody is standing at.
+auth-base cannot take a ref to web-base's server key — the server serves the handler,
+the handler closes over the ceremony, so that ref would be a cycle. Give the fact a key
+of your own and let both read it:
+
+```clojure
+(defmethod ig/init-key :my/port [_ port] port)   ; Integrant needs a method even for a value
+
+(defmethod ig/init-key :my/auth-config [_ {:keys [port store]}]
+  {:store    store
+   :deliver! send-the-link!
+   :link     {:base-url (str "http://localhost:" port) :redeem-path "/entrar"}})
+
+{:my/port                        3000
+ :my/auth-config                 {:port #ig/ref :my/port :store #ig/ref :my/store}
+ :dev.arkaitz.auth-base/ceremony #ig/ref :my/auth-config
+ :dev.arkaitz.web-base/server    {:handler #ig/ref :dev.arkaitz.web-base/handler
+                                  :port    #ig/ref :my/port}}
+```
+
+In production the public origin is usually a different fact — a proxy's name — and
+belongs in configuration of its own; the pattern is for the case where they coincide.
+
 There is **no `halt-key!`**, and the absence is deliberate: a ceremony owns no socket,
 no pool and no thread. It closes over your store, whose lifetime is yours.
 

@@ -78,3 +78,30 @@
       (is (= [:ttl-ms] (:config-key (ex-data (ex-cause thrown))))
           (str "and the cause is this module's own refusal, naming the key that would fix it — "
                "Integrant's own ex-data names the component, which is a different question")))))
+
+;; The host pattern README's "One port, two readers" recommends, run as written. The
+;; link origin and the listening port are one fact in development, and auth-base cannot
+;; take a ref to the server's key: the server serves the handler, the handler closes
+;; over the ceremony, so a ref from the ceremony to the server is a cycle. One key the
+;; host owns, read by both, is what keeps them in step.
+(defmethod ig/init-key ::port [_ port] port)
+(defmethod ig/init-key ::server [_ {:keys [port]}] {:listening-on port})
+(defmethod ig/init-key ::auth-config [_ {:keys [port deliver!]}]
+  (assoc valid
+         :deliver! deliver!
+         :link {:base-url (str "http://localhost:" port) :redeem-path "/entrar"}))
+
+(deftest one-port-key-moves-both-the-server-and-the-link-origin
+  (doseq [port [4123 5555]]
+    (let [delivered (atom nil)
+          system    (ig/init {::port                          port
+                              ::server                        {:port (ig/ref ::port)}
+                              ::auth-config                   {:port     (ig/ref ::port)
+                                                               :deliver! (fn [_ link] (reset! delivered link))}
+                              :dev.arkaitz.auth-base/ceremony (ig/ref ::auth-config)})]
+      (try
+        (auth/issue! (:dev.arkaitz.auth-base/ceremony system) "ada@x.test")
+        (is (= {:listening-on port} (::server system)) (str port ": the server reads the port"))
+        (is (re-matches (re-pattern (str "http://localhost:" port "/entrar/[A-Za-z0-9_-]{43}")) (str @delivered))
+            (str port ": and the link a person receives points at that same port: " (pr-str @delivered)))
+        (finally (ig/halt! system))))))
