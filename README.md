@@ -29,7 +29,7 @@ test belongs in the host.
 
 ```clojure
 ;; deps.edn — from Clojars
-dev.arkaitz/auth-base {:mvn/version "0.1.0"}
+dev.arkaitz/auth-base {:mvn/version "0.2.0"}
 
 ;; or straight from git, to track a commit
 dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
@@ -107,8 +107,8 @@ other side of that function. Neither depends on the other — **you** hold both,
 
 ```clojure
 {:deps {org.clojure/clojure   {:mvn/version "1.12.5"}
-        dev.arkaitz/web-base  {:mvn/version "0.2.0"}   ; the web foundation
-        dev.arkaitz/auth-base {:mvn/version "0.1.0"}}} ; the ceremony
+        dev.arkaitz/web-base  {:mvn/version "0.3.0"}   ; the web foundation
+        dev.arkaitz/auth-base {:mvn/version "0.2.0"}}} ; the ceremony
 ```
 
 web-base brings reitit-ring, hiccup, ring-jetty-adapter, tools.logging, tempura,
@@ -392,7 +392,7 @@ refused by name.
 ```
 clojure -M:test                       # the whole suite, both proofs included
 clojure -M:test -n <namespace>        # one namespace (several -n allowed)
-clojure -T:build jar                  # target/auth-base-0.1.0.jar
+clojure -T:build jar                  # target/auth-base-0.2.0.jar
 clojure -T:build install              # into ~/.m2
 CLOJARS_USERNAME=… CLOJARS_PASSWORD=<deploy token> clojure -T:build deploy
 ```

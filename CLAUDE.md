@@ -30,7 +30,7 @@ work**, never from convention. Observed:
 ```
 clojure -M:test                        # whole suite incl. harness/ and demo/; exit ≠ 0 on failure
 clojure -M:test -n <namespace>         # one namespace (several -n allowed)
-clojure -T:build jar                   # library jar → target/auth-base-0.1.0.jar (no demos inside)
+clojure -T:build jar                   # library jar → target/auth-base-0.2.0.jar (no demos inside)
 clojure -T:build install               # jar + pom into ~/.m2, for a consumer on this machine
 clojure -T:build deploy                # to Clojars with CLOJARS_USERNAME/CLOJARS_PASSWORD; run for 0.1.0
 clojure -M:harness [port]              # the ring-only harness, default 3001
