@@ -29,9 +29,9 @@
 
 (defn login
   "The one view auth-base asks the host for. It is handed the request and one
-  of three states, and returns Hiccup — which web-base renders through the
+  of four states, and returns Hiccup — which web-base renders through the
   layouts above, without auth-base knowing either of them exists."
-  [request {:keys [sent? spent?]}]
+  [request {:keys [sent? spent? limited?]}]
   (list
    [:h2 "Entrar"]
    (when sent?
@@ -39,6 +39,8 @@
       " En esta demo el enlace se imprime en la consola del servidor."])
    (when spent?
      [:p.error [:strong "Ese enlace ya no vale."] " Se usa una sola vez y caduca."])
+   (when limited?
+     [:p.error [:strong "Demasiados intentos desde aquí."] " Espera un poco y vuelve a pedir el enlace."])
    [:form {:method "post" :action "/entrar"}
     (security/csrf-field request)
     [:label "Dirección "

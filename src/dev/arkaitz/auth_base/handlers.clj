@@ -2,10 +2,13 @@
   "Ring handlers over the ceremony, and the same handlers as reitit route data
   for a host that wants them mounted rather than wired.
 
-  The host supplies **one** view. It is called with the request and one of three
-  states — `{}`, `{:sent? true}`, `{:spent? true}` — and returns whatever that
-  host's renderer accepts as a `:body`: Hiccup under web-base, a string under
-  plain Ring. That is the whole of what this module knows about pages.
+  The host supplies **one** view. It is called with the request and one of four
+  states — `{}`, `{:sent? true}`, `{:spent? true}`, `{:limited? true}` — and returns
+  whatever that host's renderer accepts as a `:body`: Hiccup under web-base, a string
+  under plain Ring. That is the whole of what this module knows about pages.
+  `:limited?` is the sign-in form refused by the rate limit, answered with status 429
+  and the page, so the person sees the form and a reason rather than a browser's own
+  error page.
 
   Three details are security, not ergonomics:
 
@@ -158,7 +161,7 @@
        ;; their allowance.
        (let [{:keys [allowed? retry-after-ms]} (decide (:remote-addr request))]
          (if-not allowed?
-           (cond-> (response/status (response/response "") 429)
+           (cond-> (response/status (response/response (view request {:limited? true})) 429)
              retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))
              true           no-store)
          (let [identifier (get (:form-params request) field)]

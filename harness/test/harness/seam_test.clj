@@ -160,3 +160,14 @@
            requires)
         "the harness is ring, one namespace of this module, and hand-written HTML —
          no web-base, and nothing of the module below its public face")))
+
+(deftest a-sign-in-refused-by-the-rate-limit-shows-the-form-and-why
+  (let [{:keys [app]} (fresh)
+        post (fn [] (app (assoc (mock/request :post "/entrar") :form-params {"identifier" "ada@example.test"})))]
+    (dotimes [_ 5] (post))
+    (let [r (post)]
+      (is (= 429 (:status r)) "the sixth from one source is refused")
+      (is (some? (get-in r [:headers "Retry-After"])) "saying when to come back")
+      (is (str/includes? (str (:body r)) "Demasiados intentos") "with the host's own sentence for it")
+      (is (str/includes? (str (:body r)) "Enviar enlace") "and the form, so the person is still on the page")
+      (is (not (str/includes? (str (:body r)) "va de camino")) "and not the sentence of a link that was sent"))))

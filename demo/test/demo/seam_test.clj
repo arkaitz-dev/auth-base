@@ -127,3 +127,12 @@
   (is (some? (resolve 'dev.arkaitz.web-base/handler))
       "precondition: web-base really is on this classpath, so reaching across would
        have compiled"))
+
+(deftest a-sign-in-refused-by-the-rate-limit-shows-the-hosts-page-and-why
+  (let [f (fresh)
+        r (last (repeatedly 6 #(second (ask-for-a-link f "ada@example.test"))))]
+    (is (= 429 (:status r)) "the sixth from one source is refused")
+    (is (some? (get-in r [:headers "Retry-After"])) "saying when to come back")
+    (is (str/includes? (str (:body r)) "Demasiados intentos") "with the host's own sentence, through its layouts")
+    (is (str/includes? (str (:body r)) "Enviar enlace") "and the form")
+    (is (not (str/includes? (str (:body r)) "va de camino")) "and not the sentence of a link that was sent")))

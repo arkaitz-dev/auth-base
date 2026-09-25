@@ -297,7 +297,9 @@ it counts by address or by source, is open.
 carries `Retry-After`: the whole seconds until that source's window reopens, rounded
 up, so a client that waits exactly that long is let in. A host's own limiter answers
 whether and never when, so its `429` carries no `Retry-After` rather than an invented
-one — an invented one is the defect below (§17, 2026-09-25).
+one — an invented one is the defect below (§17, 2026-09-25). The `429`'s body is the
+host's own view in a fourth state, `{:limited? true}`: an empty one reached the person
+as the browser's own error page, with no form and no sentence (db-base FRICTION.md, F9).
 
 ## 12 · The bootstrap
 

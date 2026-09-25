@@ -34,7 +34,12 @@
                                        :clock    #(deref clock)})]
     (merge {:clock clock :log log :deliveries deliveries :ceremony ceremony :views (or views (atom 0))}
            (handlers/handlers ceremony
-                              (cond-> {:view         (fn [_ _] (some-> views (swap! inc)) "<page>")
+                              (cond-> {:view         (fn [_ state]
+                                                       (some-> views (swap! inc))
+                                                       ;; The state the view was handed, spelt into the
+                                                       ;; body, so the 429's `{:limited? true}` is
+                                                       ;; observable — and `{}` still reads "<page>".
+                                                       (str "<page" (when (seq state) (pr-str state)) ">"))
                                        :login-path   "/login"
                                        :logout-path  "/out"
                                        :after-login  "/home"
@@ -249,7 +254,7 @@
   (let [{:keys [issue log deliveries clock]}
         (fixture {:subjects {"a@x.test" {:id 1}}
                   :rate-limit {:limit 2 :window-ms 60000}})
-        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body ""})
+        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body "<page{:limited? true}>"})
         sent    {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}]
     ;; The window opens at 1000 and closes at 61000. Refusals are taken away from its
     ;; first instant on purpose: there, and only there, a header that ignored the
@@ -281,7 +286,7 @@
 (deftest retry-after-is-the-whole-seconds-until-this-sources-window-reopens--rounded-up
   (let [{:keys [issue log deliveries clock]}
         (fixture {:subjects {} :rate-limit {:limit 1 :window-ms 900000}})
-        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body ""})
+        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body "<page{:limited? true}>"})
         sent    {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}
         at      (fn [t] (reset! clock t) (post issue "a@x.test"))]
     (is (= sent (at 1000)) "t=1000: the only attempt the window allows, and it opens the window")
@@ -301,20 +306,23 @@
   ;; be invented — which is the defect a literal "60" was.
   (let [asked  (atom [])
         answer (atom false)
+        views  (atom 0)
         {:keys [issue log deliveries]}
-        (fixture {:subjects {} :rate-limit (fn [k] (swap! asked conj k) @answer)})]
-    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body ""}
+        (fixture {:subjects {} :views views :rate-limit (fn [k] (swap! asked conj k) @answer)})]
+    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body "<page{:limited? true}>"}
            (post issue "a@x.test" :from "10.0.0.7"))
-        "the host's false is a 429, with no delay named")
+        "the host's false is a 429 carrying the host's page in its limited state, with no delay named")
+    (is (= 1 @views) "the view was drawn once for that refusal")
     (is (= [] @log) "and it reached neither the store")
     (is (= [] @deliveries) "nor the delivery")
     (reset! answer true)
     (is (= {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}
            (post issue "a@x.test" :from "10.0.0.7"))
         "and the host's true lets the next one through")
+    (is (= 1 @views) "a sign-in that goes through draws no page: it redirects")
     (is (= ["10.0.0.7" "10.0.0.7"] @asked) "the host's function was asked the source, once per request")
     (reset! answer nil)
-    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body ""}
+    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body "<page{:limited? true}>"}
            (post issue "a@x.test" :from "10.0.0.7"))
         (str "and nil refuses, as it always did — a limiter that answers nil from a `when` or"
              " a `get` must not become no limit at all"))))
@@ -330,7 +338,7 @@
            (post issue "a@x.test"))
         "own clock 0: the window opens")
     (reset! own 3000)
-    (is (= {:status 429 :headers {"Retry-After" "7" "Cache-Control" "no-store"} :body ""}
+    (is (= {:status 429 :headers {"Retry-After" "7" "Cache-Control" "no-store"} :body "<page{:limited? true}>"}
            (post issue "a@x.test"))
         (str "own clock 3000: 7 seconds left — timed by the map's clock; the ceremony's, which"
              " has not moved, would say 10"))))

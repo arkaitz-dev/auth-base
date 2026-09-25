@@ -36,15 +36,17 @@
 
 (defn login-view
   "The one view auth-base asks a host for. It is called with the request and
-  one of three states, and returns whatever this host's renderer takes — here
+  one of four states, and returns whatever this host's renderer takes — here
   a string, because there is no renderer."
-  [_request {:keys [sent? spent?]}]
+  [_request {:keys [sent? spent? limited?]}]
   (page "Entrar"
         (when sent?
           "<p><strong>Si esa dirección existe, el enlace va de camino.</strong> "
           "En este harness el enlace se imprime en la consola.</p>")
         (when spent?
           "<p><strong>Ese enlace ya no vale.</strong> Se usa una sola vez y caduca.</p>")
+        (when limited?
+          "<p><strong>Demasiados intentos desde aquí.</strong> Espera un poco y vuelve a pedir el enlace.</p>")
         "<form method=\"post\" action=\"/entrar\">"
         "<label>Dirección <input name=\"identifier\" type=\"email\" required autofocus></label> "
         "<button type=\"submit\">Enviar enlace</button></form>"

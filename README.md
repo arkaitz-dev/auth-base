@@ -84,10 +84,12 @@ What it does not do: authorise, send mail, persist, render, or know your domain.
                 :rate-limit   {:limit 5 :window-ms (* 15 60 1000)}}))
 ```
 
-`:view` is called with the request and one of three states — `{}`, `{:sent? true}`,
-`{:spent? true}` — and returns whatever your renderer accepts as a `:body`: Hiccup
-under web-base, a string under plain Ring. That is the whole of what this module knows
-about pages.
+`:view` is called with the request and one of four states — `{}`, `{:sent? true}`,
+`{:spent? true}`, `{:limited? true}` — and returns whatever your renderer accepts as a
+`:body`: Hiccup under web-base, a string under plain Ring. That is the whole of what
+this module knows about pages. `{:limited? true}` is the form refused by the rate
+limit, answered with status 429: give it a sentence, or the person sees the ordinary
+form and no reason.
 
 Then `(auth/subject-fn ceremony)` is your `request → subject-or-nil`, and it is also
 where revocation takes effect.
@@ -294,7 +296,9 @@ let anyone spend a known user's allowance and lock them out of their own login. 
 a proxy that is the proxy's address unless your stack is told to trust
 `X-Forwarded-For`.
 
-A refused request is a `429` with `Cache-Control: no-store`. Under the map it also
+A refused request is a `429` with `Cache-Control: no-store` whose body is your `:view`
+in its `{:limited? true}` state — the page the person was on, and a reason — and not an
+empty body a browser replaces with its own error page. Under the map it also
 carries `Retry-After`: the whole seconds until that source's window reopens, rounded
 up, so a client that waits exactly that long gets in. Under your own
 `(fn [key] boolean)` it carries none — your function says whether, not when, and a
