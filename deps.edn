@@ -25,7 +25,13 @@
                        ring/ring-mock                {:mvn/version "0.6.2"}
                        ring/ring-jetty-adapter       {:mvn/version "1.15.5"}
                        dev.arkaitz/web-base          {:mvn/version "0.2.0"}
-                       io.github.clojure/tools.build {:mvn/version "0.10.14"}}
+                       io.github.clojure/tools.build {:mvn/version "0.10.14"}
+                       ;; The optional JDBC store's own test engines and the next.jdbc it
+                       ;; requires — here and never in :deps: a host that wants that
+                       ;; namespace brings next.jdbc itself (SPEC §14).
+                       com.github.seancorfield/next.jdbc {:mvn/version "1.3.1048"}
+                       com.h2database/h2                 {:mvn/version "2.5.250"}
+                       org.xerial/sqlite-jdbc            {:mvn/version "3.53.4.0"}}
          :main-opts   ["-m" "cognitect.test-runner" "-d" "test" "-d" "harness/test" "-d" "demo/test"]
          :exec-fn     cognitect.test-runner.api/test}
 

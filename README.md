@@ -250,6 +250,44 @@ not the row plus a flag saying it was new: the session freezes this value and re
 its revocation generation on every request, so a value the store will never answer with
 is a session no revocation can end.
 
+### A store over JDBC
+
+`dev.arkaitz.auth-base.jdbc` is that port over a relational database, for a host that
+wants one — plus the account half every host wrote for itself. **It is optional**: it
+needs `next.jdbc`, which this library does not declare, so a host that keeps its own
+store never loads it (tested with next.jdbc 1.3.1048, on H2 and SQLite).
+
+```clojure
+(require '[dev.arkaitz.auth-base.jdbc :as auth-jdbc])
+
+(auth-jdbc/check! ds)                         ; at boot: the three tables are as this version reads them
+(auth/ceremony {:store      (auth-jdbc/store ds)
+                :on-unknown #(auth-jdbc/register! ds %)
+                …})
+(auth-jdbc/identifier-for ds subject)         ; the address an account belongs to
+(auth-jdbc/reclaim-expired! ds (System/currentTimeMillis))
+```
+
+`ds` is a `javax.sql.DataSource` you opened — from db-base, `(:datasource db)` — and
+never a handle or a map, which is refused by name. It runs no migration: copy these
+three statements, `auth-jdbc/ddl`, into your own, whole, and let `check!` catch a copy
+that lost a table or a column (it reads names, not keys — the keys are what make
+registration and revocation exact):
+
+```sql
+CREATE TABLE account (subject VARCHAR(36) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL UNIQUE, created_at BIGINT NOT NULL);
+CREATE TABLE account_generation (subject VARCHAR(36) NOT NULL PRIMARY KEY, generation BIGINT NOT NULL);
+CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL);
+```
+
+Every statement is portable: `take-challenge!` reads and then deletes, and **the delete's
+count decides** who redeemed the link; a revocation moves its generation by
+compare-and-set. `register!` stores the identifier as given — pass it through
+`auth/normalise` when it did not come from the ceremony — and is not for use inside a
+transaction you opened. An address longer than 320 characters is refused by the engine
+— SQLite, which ignores declared widths, excepted — and reaches your error handling as
+the engine's exception.
+
 ## The bootstrap
 
 The identities that exist before any data does are listed **by address, as data you

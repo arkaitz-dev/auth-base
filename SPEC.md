@@ -37,6 +37,12 @@ passes its function to web-base, or to any other Ring application, or to none.
   administrator exist with no person record at all.
 - **Not a mail sender.** It composes what must be delivered and hands it over.
 - **Not a database.** It receives a store the way web-base receives a session store.
+  Amended 2026-09-25: it also ships one, `dev.arkaitz.auth-base.jdbc`, loaded only by a
+  host that requires it. That namespace opens nothing and runs no migration — it takes
+  the host's `javax.sql.DataSource` and hands out its three tables as statements for
+  the host's own migrations — so the sentence above stays true. Three hosts had copied
+  the same store by hand, and a store whose single use is proved once beats three that
+  were each proved by their author.
 - **Not a web framework.** It does not know web-base exists.
 
 ## 3 · The rule that governs everything here
@@ -346,7 +352,8 @@ unchanged.
 **Out**
 
 - authorisation, in every form, including roles and scopes;
-- the person, the account lifecycle beyond the credential itself, and any schema —
+- the person, the account lifecycle beyond the credential itself, and any schema but
+  the three tables of the optional `jdbc` namespace, which it runs nowhere —
   `:on-unknown` (§6) is not an exception to this but a consequence of it: the module
   names the one safe moment to create an account and hands the act to the host, rather
   than learning what an account is;

@@ -47,8 +47,10 @@
   SPEC §3's optional key, and **only `dev.arkaitz.auth-base.integrant` may name
   it** — a boundary this scan cannot express, because it asks the same question
   of every file, so a scan of its own says it below (added 2026-09-22, when the
-  first host asked)."
-  #{"clojure" "ring" "integrant" "dev.arkaitz.auth-base"})
+  first host asked). `next` is the optional JDBC store's `next.jdbc`, and **only
+  `dev.arkaitz.auth-base.jdbc` may name it** — drawn the same way, by a scan of its own
+  below (2026-09-25, from four hosts that each wrote the store)."
+  #{"clojure" "ring" "integrant" "next" "dev.arkaitz.auth-base"})
 
 (defn- src-root
   "The src directory, located through the classpath so a different working
@@ -140,7 +142,7 @@
       (let [files (source-files root)]
         (is (contains? files anchor-path)
             (str "precondition: the scan reached the real sources, found " (pr-str (keys files))))
-        (is (<= 7 (count files))
+        (is (<= 9 (count files))
             (str "precondition: every source was found, not a subset: " (pr-str (sort (keys files)))))
         (testing "the extractor fires on a require the module must never have — without
                   this, an extractor that returned nothing would pass silently"
@@ -254,6 +256,91 @@
                  " may name it, and a require of it elsewhere compiles, loads and passes every"
                  " other test"))))))
 
+(def ^:private jdbc-exempt-path "dev/arkaitz/auth_base/jdbc.clj")
+(def ^:private jdbc-exempt-ns 'dev.arkaitz.auth-base.jdbc)
+
+(defn- next-in
+  "What ties a source to next.jdbc: a require whose root is `next` — prefix lists
+  included, through the same extractor the roots scan uses — a symbol or keyword
+  qualified by `next` or `next.*`, or the optional JDBC namespace named at all. A bare
+  `next` is `clojure.core/next` and never counts."
+  [text]
+  (let [forms     (forms-in text)
+        required  (filter #(or (= "next" (root-of %)) (= jdbc-exempt-ns %)) (required-namespaces (first forms)))
+        qualified (filter (fn [x] (and (or (symbol? x) (keyword? x))
+                                       (let [n (namespace x)]
+                                         (or (= n "next") (some-> n (str/starts-with? "next."))
+                                             (= n (str jdbc-exempt-ns))))))
+                          (mapcat walk-with-tags forms))]
+    (vec (distinct (concat required qualified)))))
+
+(deftest only-the-jdbc-namespace-references-next-jdbc
+  (testing "positive controls"
+    (is (= '[next.jdbc] (next-in "(ns x (:require [next.jdbc :as jdbc]))")) "a plain require")
+    (is (= '[next.jdbc] (next-in "(ns x (:require [next [jdbc :as j]]))")) "a prefix-list require")
+    (is (= '[next.jdbc/execute!] (next-in "(ns x) (defn f [d] (next.jdbc/execute! d [\"x\"]))")) "a qualified call")
+    (is (= [jdbc-exempt-ns] (next-in (str "(ns x (:require [" jdbc-exempt-ns "]))")))
+        "and the optional namespace named from elsewhere, which would impose it"))
+  (testing "controls: what must not fire"
+    (is (= [] (next-in "(ns x) (def s \"the next step\")")) "the English word")
+    (is (= [] (next-in "(ns x) (defn f [nxt] (next nxt))")) "clojure.core/next is not next.jdbc — a bare symbol")
+    (is (= [] (next-in "(ns x (:require [dev.arkaitz.auth-base :as auth]))")) "this module itself"))
+  (let [files (source-files (src-root))]
+    (is (contains? files jdbc-exempt-path)
+        (str "precondition: the exempt file is where its name says — found " (sort (keys files))))
+    (is (= '[next.jdbc] (filterv #{'next.jdbc} (next-in (slurp (get files jdbc-exempt-path)))))
+        "the exempt file does reference next.jdbc, read from disk")
+    (is (= [] (vec (for [[path file] (sort (dissoc files jdbc-exempt-path))
+                         offender    (next-in (slurp file))]
+                     [path offender])))
+        (str "SPEC §14: only " jdbc-exempt-ns " may name next.jdbc, and nothing may require that"
+             " namespace — the facade and the Integrant key included"))))
+
+(declare consumer-classpath)
+
+(defn- loading-report
+  "One JVM on the classpath a CONSUMER resolves, asked to require every namespace of
+  `nses` and next.jdbc itself, answering what loaded, what failed and why. Bounded."
+  [^File project-root nses]
+  (let [{:keys [entries error]} (consumer-classpath project-root)]
+    (if error
+      {:error error}
+      (let [form    (pr-str (list 'let ['why '(fn [t] (apply str (interpose " | " (keep ex-message (take-while some? (iterate ex-cause t))))))
+                                        'nss (list 'quote (vec nses))]
+                                  '(let [failed (into {} (keep (fn [n] (try (require n) nil (catch Throwable e [n (why e)]))) nss))]
+                                     (prn {:loaded (vec (sort (filter (set nss) (map ns-name (all-ns)))))
+                                           :failed failed
+                                           :next   (try (require 'next.jdbc) :present
+                                                        (catch java.io.FileNotFoundException _ :absent))}))))
+            java    (str (System/getProperty "java.home") "/bin/java")
+            process (.start (doto (ProcessBuilder. ^java.util.List [java "-cp" (str/join ":" entries) "clojure.main" "-e" form])
+                              (.directory project-root)
+                              (.redirectError java.lang.ProcessBuilder$Redirect/INHERIT)))
+            drained (future (slurp (.getInputStream process)))]
+        (if-not (.waitFor process 120 TimeUnit/SECONDS)
+          (do (.destroyForcibly process) {:error "the loading subprocess did not finish within 120 s"})
+          (let [output (deref drained 10000 ::stalled)]
+            (if (and (string? output) (zero? (.exitValue process)))
+              (edn/read-string output)
+              {:error (str "the loading subprocess exited " (.exitValue process) ": " output)})))))))
+
+(deftest every-namespace-but-the-jdbc-one-loads-without-next-jdbc
+  ;; A stray require of next.jdbc compiles, loads and passes every other test here —
+  ;; the suite has next.jdbc on :test. Only a consumer's classpath can show a consumer
+  ;; being handed a database library it never asked for.
+  (let [root   (.getParentFile ^File (src-root))
+        nses   (vec (sort (map (fn [[path _]] (symbol (-> path (str/replace #"\.clj$" "") (str/replace "/" ".") (str/replace "_" "-"))))
+                               (source-files (src-root)))))
+        report (loading-report root nses)
+        others (vec (remove #{jdbc-exempt-ns} nses))]
+    (is (nil? (:error report)) (str "precondition: the consumer's JVM ran — " (:error report)))
+    (is (some #{jdbc-exempt-ns} nses) "precondition: the walk found the JDBC namespace")
+    (is (= :absent (:next report)) "control: a consumer's classpath has no next.jdbc, so what follows means something")
+    (is (= others (:loaded report)) (str "every other namespace loads there: " (pr-str (:loaded report))))
+    (is (= [jdbc-exempt-ns] (keys (:failed report))) (str "and only the JDBC one fails: " (pr-str (:failed report))))
+    (is (re-find #"next/jdbc" (str (get (:failed report) jdbc-exempt-ns)))
+        "for the missing next.jdbc, and not for some other reason")))
+
 (deftest the-module-names-no-file-of-its-own
   ;; SPEC §12's trap: a library that knows a file name can look for it, and
   ;; then the directory a process started from decides who is an
@@ -326,7 +413,7 @@
   ;; minted tokens and forced this delay, and the property is about the state
   ;; a fresh load leaves behind.
   (let [namespaces (vec (module-namespaces))]
-    (is (<= 7 (count namespaces))
+    (is (<= 9 (count namespaces))
         (str "precondition: every source of the module was found: " (pr-str namespaces)))
     (is (some #{'dev.arkaitz.auth-base.token} namespaces)
         "precondition: including the one that holds the generator")
