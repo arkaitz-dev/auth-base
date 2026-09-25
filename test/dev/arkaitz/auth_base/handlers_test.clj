@@ -249,13 +249,18 @@
   (let [{:keys [issue log deliveries clock]}
         (fixture {:subjects {"a@x.test" {:id 1}}
                   :rate-limit {:limit 2 :window-ms 60000}})
-        refused {:status 429 :headers {"Retry-After" "60" "Cache-Control" "no-store"} :body ""}
+        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body ""})
         sent    {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}]
+    ;; The window opens at 1000 and closes at 61000. Refusals are taken away from its
+    ;; first instant on purpose: there, and only there, a header that ignored the
+    ;; window and always said 60 would have been right.
     (is (= sent (post issue "a@x.test" :from "10.0.0.1")) "the first from this source passes")
     (is (= sent (post issue "b@x.test" :from "10.0.0.1")) "and the second, a different address")
     (reset! log [])
-    (is (= refused (post issue "c@x.test" :from "10.0.0.1"))
-        "the third is refused although it is a third address — the count is of the source")
+    (reset! clock 18000)
+    (is (= (refused "43") (post issue "c@x.test" :from "10.0.0.1"))
+        (str "the third is refused although it is a third address — the count is of the source"
+             " — and at 18000 the window has 43 seconds left"))
     (is (= [] @log) "and it reached neither the store")
     (is (= 2 (count @deliveries)) "nor the delivery, so the refusal is not decorative")
     (is (= sent (post issue "a@x.test" :from "10.0.0.2"))
@@ -263,13 +268,72 @@
          is not itself limited: a limit counted per address would let anybody spend a
          known user's allowance and lock them out of their own login")
     ;; The refusals must not push the window along.
+    (reset! clock 40000)
     (post issue "d@x.test" :from "10.0.0.1")
-    (post issue "e@x.test" :from "10.0.0.1")
+    (is (= (refused "21") (post issue "e@x.test" :from "10.0.0.1"))
+        "at 40000 it still closes at 61000 — a refusal that moved it would say 38 or 60")
     (reset! clock (+ 1000 60000))
     (is (= sent (post issue "f@x.test" :from "10.0.0.1"))
         "and the window reopens on the schedule the first attempt set, not the last")))
 
 ;; --- logout, the 401, and the configuration -------------------------------
+
+(deftest retry-after-is-the-whole-seconds-until-this-sources-window-reopens--rounded-up
+  (let [{:keys [issue log deliveries clock]}
+        (fixture {:subjects {} :rate-limit {:limit 1 :window-ms 900000}})
+        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body ""})
+        sent    {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}
+        at      (fn [t] (reset! clock t) (post issue "a@x.test"))]
+    (is (= sent (at 1000)) "t=1000: the only attempt the window allows, and it opens the window")
+    (reset! log [])
+    (is (= (refused "780") (at 121999))
+        (str "t=121999: 779001 ms left of a fifteen-minute window, which is 780 seconds rounded"
+             " up — not 779, not 900, and not 60"))
+    (is (= (refused "2") (at 899000)) "t=899000: exactly 2000 ms left is 2 seconds, not 3")
+    (is (= (refused "2") (at 899999)) "t=899999: 1001 ms left is 2 seconds, not 1")
+    (is (= (refused "1") (at 900999)) "t=900999: one millisecond left is 1 second, never 0")
+    (is (= [] @log) "none of the refusals reached the store")
+    (is (= 1 (count @deliveries)) "nor the delivery")
+    (is (= sent (at 901000)) "t=901000: the window has reopened, and an allowed answer names no delay")))
+
+(deftest a-hosts-limiter-decides-and-its-refusal-names-no-delay
+  ;; A host's `(fn [key] boolean)` says whether and never when, so a number here would
+  ;; be invented — which is the defect a literal "60" was.
+  (let [asked  (atom [])
+        answer (atom false)
+        {:keys [issue log deliveries]}
+        (fixture {:subjects {} :rate-limit (fn [k] (swap! asked conj k) @answer)})]
+    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body ""}
+           (post issue "a@x.test" :from "10.0.0.7"))
+        "the host's false is a 429, with no delay named")
+    (is (= [] @log) "and it reached neither the store")
+    (is (= [] @deliveries) "nor the delivery")
+    (reset! answer true)
+    (is (= {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}
+           (post issue "a@x.test" :from "10.0.0.7"))
+        "and the host's true lets the next one through")
+    (is (= ["10.0.0.7" "10.0.0.7"] @asked) "the host's function was asked the source, once per request")
+    (reset! answer nil)
+    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body ""}
+           (post issue "a@x.test" :from "10.0.0.7"))
+        (str "and nil refuses, as it always did — a limiter that answers nil from a `when` or"
+             " a `get` must not become no limit at all"))))
+
+(deftest a-rate-limit-map-that-names-its-own-clock-is-timed-by-it
+  ;; The ceremony's clock is only the default. Here the two disagree on purpose: the
+  ;; ceremony's stands still at 1000, the limiter's moves, and the delay says whose
+  ;; clock decided.
+  (let [own (atom 0)
+        {:keys [issue]} (fixture {:subjects {}
+                                  :rate-limit {:limit 1 :window-ms 10000 :clock #(deref own)}})]
+    (is (= {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}
+           (post issue "a@x.test"))
+        "own clock 0: the window opens")
+    (reset! own 3000)
+    (is (= {:status 429 :headers {"Retry-After" "7" "Cache-Control" "no-store"} :body ""}
+           (post issue "a@x.test"))
+        (str "own clock 3000: 7 seconds left — timed by the map's clock; the ceremony's, which"
+             " has not moved, would say 10"))))
 
 (deftest logout-deletes-the-session-and-lands-where-the-host-said
   (let [{:keys [logout]} (fixture {})

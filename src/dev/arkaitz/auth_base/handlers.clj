@@ -68,7 +68,11 @@
 
 (defn- limiter
   "`:rate-limit` is either a limiter the host wrote — any `(fn [key] boolean)` —
-  or the configuration for the one that ships here.
+  or the configuration for the one that ships here. Either way the answer is a
+  map with `:allowed?`, and only the one that ships here adds `:retry-after-ms`:
+  a host's limiter says whether, never when, so its refusals carry no delay
+  rather than an invented one. A host's answer is read for truth, as it always
+  was, so nil refuses.
 
   The ceremony's clock is the limiter's default. A host injects a clock so
   expiry is testable without waiting (SPEC §5), and a limiter that went on
@@ -76,11 +80,16 @@
   that could still only be tested by sleeping."
   [ceremony rate-limit]
   (cond
-    (nil? rate-limit) (constantly true)
-    (map? rate-limit) (rate-limit/fixed-window (merge {:clock (:clock ceremony)} rate-limit))
-    (ifn? rate-limit) rate-limit
+    (nil? rate-limit) (constantly {:allowed? true})
+    (map? rate-limit) (rate-limit/fixed-window-decider (merge {:clock (:clock ceremony)} rate-limit))
+    (ifn? rate-limit) (fn [key] {:allowed? (rate-limit key)})
     :else (fail! ":rate-limit must be a map of options or a function of one key"
                  [:rate-limit] rate-limit)))
+
+(defn- whole-seconds
+  "Rounded up, so a client that waits exactly this long finds the window open."
+  [ms]
+  (quot (+ ms 999) 1000))
 
 (defn- submitted?
   "Whether the form field holds something `issue!` will accept. Deliberately not
@@ -104,7 +113,13 @@
                    absent for no limit. The key is the request's `:remote-addr`,
                    which is a proxy's address unless the host is told to trust
                    `X-Forwarded-For`. The map inherits the ceremony's clock
-                   unless it names its own.
+                   unless it names its own. A refusal is a `429`; under the map
+                   it carries `Retry-After`, the whole seconds until that
+                   source's window reopens, rounded up — never earlier than
+                   the truth, and later only when a full table forgets the
+                   source and lets it back in sooner. Under a host's function
+                   it carries none, because that function says whether and
+                   never when.
 
   The POST handler reads `:form-params`, so the host's stack must have parsed
   the body — `ring.middleware.params/wrap-params`, which web-base already
@@ -124,7 +139,7 @@
         after-login  (or after-login "/")
         after-logout (or after-logout login-path)
         field        (or field default-field)
-        allow?       (limiter ceremony rate-limit)
+        decide       (limiter ceremony rate-limit)
         redeem-path  (get-in ceremony [:link :redeem-path])
         sent         (no-store (response/redirect (str login-path "?ab=sent") :see-other))
         spent        (no-store (response/redirect (str login-path "?ab=spent") :see-other))
@@ -137,15 +152,15 @@
 
      :issue
      (fn [request]
-       (if-not (allow? (:remote-addr request))
-         ;; Keyed by source, never by address: a limit counted per address
-         ;; would answer differently for one that somebody had just asked
-         ;; about, and would let anyone lock a known user out of their own
-         ;; login by spending their allowance.
-         (-> (response/response "")
-             (response/status 429)
-             (response/header "Retry-After" "60")
-             no-store)
+       ;; Keyed by source, never by address: a limit counted per address would
+       ;; answer differently for one that somebody had just asked about, and
+       ;; would let anyone lock a known user out of their own login by spending
+       ;; their allowance.
+       (let [{:keys [allowed? retry-after-ms]} (decide (:remote-addr request))]
+         (if-not allowed?
+           (cond-> (response/status (response/response "") 429)
+             retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))
+             true           no-store)
          (let [identifier (get (:form-params request) field)]
            (if (submitted? identifier)
              (do (ceremony/issue! ceremony identifier)
@@ -156,7 +171,7 @@
              ;; shapes, and letting that throw would turn an empty submission
              ;; into a 500. No new view state is invented for it, because there
              ;; is nothing to tell the person that the empty form does not.
-             blank))))
+             blank)))))
 
      :redeem
      (fn [request]
