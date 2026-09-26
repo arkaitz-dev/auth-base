@@ -107,7 +107,7 @@ other side of that function. Neither depends on the other — **you** hold both,
 
 ```clojure
 {:deps {org.clojure/clojure   {:mvn/version "1.12.5"}
-        dev.arkaitz/web-base  {:mvn/version "0.3.0"}   ; the web foundation
+        dev.arkaitz/web-base  {:mvn/version "0.4.0"}   ; the web foundation
         dev.arkaitz/auth-base {:mvn/version "0.2.0"}}} ; the ceremony
 ```
 
