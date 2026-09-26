@@ -32,7 +32,7 @@ clojure -M:test                        # whole suite incl. harness/ and demo/; e
 clojure -M:test -n <namespace>         # one namespace (several -n allowed)
 clojure -T:build jar                   # library jar → target/auth-base-0.3.0.jar (no demos inside)
 clojure -T:build install               # jar + pom into ~/.m2, for a consumer on this machine
-clojure -T:build deploy                # to Clojars with CLOJARS_USERNAME/CLOJARS_PASSWORD; run for 0.1.0 and 0.2.0
+clojure -T:build deploy                # to Clojars with CLOJARS_USERNAME/CLOJARS_PASSWORD; run for 0.1.0, 0.2.0 and 0.3.0
 clojure -M:harness [port]              # the ring-only harness, default 3001
 AUTH_DEMO_SESSION_KEY=$(openssl rand -base64 16) clojure -M:demo [port]   # the web-base demo, default 3000
 ```
