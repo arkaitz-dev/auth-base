@@ -2,6 +2,7 @@
   "`clojure -M:demo [port]`. Prints the link it would have emailed."
   (:gen-class)
   (:require [demo.app :as app]
+            [dev.arkaitz.auth-base.console :as console]
             [dev.arkaitz.web-base :as wb]
             [dev.arkaitz.web-base.session :as session]))
 
@@ -26,8 +27,7 @@
         key* (session-key)
         ceremony (app/ceremony
                   {:base-url base
-                   :deliver! (fn [identifier link]
-                               (println (str "\n  ── link for " identifier "\n     " link "\n")))})]
+                   :deliver! console/deliver!})]
     (println (str "  Demo on " base))
     (println "  accounts:  ada@example.test, alan@example.test")
     (println "  bootstrap: root@example.test (no record anywhere)")

@@ -1,7 +1,8 @@
 (ns harness.main
   "`clojure -M:harness [port]`. Prints the link it would have emailed."
   (:gen-class)
-  (:require [harness.app :as app]
+  (:require [dev.arkaitz.auth-base.console :as console]
+            [harness.app :as app]
             [ring.adapter.jetty :as jetty]))
 
 (def ^:private seeded
@@ -23,6 +24,5 @@
                {:base-url  base
                 :subjects  seeded
                 :bootstrap ["root@example.test"]
-                :deliver!  (fn [identifier link]
-                             (println (str "\n  ── link for " identifier "\n     " link "\n")))}))
+                :deliver!  console/deliver!}))
      {:port port :join? true})))

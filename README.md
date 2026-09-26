@@ -107,7 +107,7 @@ other side of that function. Neither depends on the other — **you** hold both,
 
 ```clojure
 {:deps {org.clojure/clojure   {:mvn/version "1.12.5"}
-        dev.arkaitz/web-base  {:mvn/version "0.4.0"}   ; the web foundation
+        dev.arkaitz/web-base  {:mvn/version "0.5.0"}   ; the web foundation
         dev.arkaitz/auth-base {:mvn/version "0.2.0"}}} ; the ceremony
 ```
 
@@ -334,7 +334,7 @@ something to name when there is no local identity at all.
 | key | meaning |
 |---|---|
 | `:store` | an implementation of the port (required) |
-| `:deliver!` | `(fn [identifier link])` (required) |
+| `:deliver!` | `(fn [identifier link])` (required); in development, `dev.arkaitz.auth-base.console/deliver!` prints the link — never in production, where it would put a credential in the logs |
 | `:link` | `{:base-url "https://host" :redeem-path "/entrar"}` (required) |
 | `:ttl-ms` | how long a challenge lives (default 15 minutes) |
 | `:clock` | `(fn [])` → epoch milliseconds (default the system clock) |

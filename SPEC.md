@@ -357,7 +357,10 @@ unchanged.
   `:on-unknown` (§6) is not an exception to this but a consequence of it: the module
   names the one safe moment to create an account and hands the act to the host, rather
   than learning what an account is;
-- mail transport;
+- mail transport — `dev.arkaitz.auth-base.console/deliver!` (2026-09-26) prints the link
+  for development and is not an exception to this: it transports nothing, four hosts
+  had written the same four `println`s, and a namespace of its own keeps every host that
+  still prints links findable before it reaches production;
 - anything that fails §4.
 
 ## 15 · Settled, and open
