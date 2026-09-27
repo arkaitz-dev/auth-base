@@ -59,17 +59,24 @@
 
 (defn check!
   "Selects every column this namespace uses from each of its three tables, asking for
-  no rows, and throws the engine's refusal when one is missing. For the host's boot:
-  a copied migration that lost or renamed a table or a column fails there, not at a
-  login. **Names only**: a copy that dropped a key or the uniqueness of `identifier`
-  passes, and those are what make registration and revocation exact — copy `ddl`
-  whole."
+  no rows, and returns `ds`. For the host's boot: a copied migration that lost or
+  renamed a table or a column fails there, not at a login, as an `ex-info` naming the
+  table and saying what to do, with the engine's refusal — which names the column — as
+  its cause. **Names only**: a copy that dropped a key or the uniqueness of
+  `identifier` passes, and those are what make registration and revocation exact —
+  copy `ddl` whole."
   [ds]
   (let [ds (datasource! ds)]
-    (doseq [sql ["SELECT subject, identifier, created_at FROM account WHERE 1 = 0"
-                 "SELECT subject, generation FROM account_generation WHERE 1 = 0"
-                 "SELECT token, identifier, expires_at FROM login_challenge WHERE 1 = 0"]]
-      (jdbc/execute! ds [sql]))
+    (doseq [[table sql] [["account" "SELECT subject, identifier, created_at FROM account WHERE 1 = 0"]
+                         ["account_generation" "SELECT subject, generation FROM account_generation WHERE 1 = 0"]
+                         ["login_challenge" "SELECT token, identifier, expires_at FROM login_challenge WHERE 1 = 0"]]]
+      (try (jdbc/execute! ds [sql])
+           (catch SQLException e
+             (throw (ex-info (str "auth-base jdbc: check! could not read table " table " as this version does —"
+                                  " the table or one of its columns is missing; copy auth-jdbc/ddl whole, one"
+                                  " statement per migration or separated by --;;")
+                             {:table table}
+                             e)))))
     ds))
 
 ;; --- accounts -------------------------------------------------------------------
@@ -185,6 +192,17 @@
   tables of `ddl`. The ceremony takes it as `:store`."
   [ds]
   (->JdbcStore (datasource! ds)))
+
+(defn latest-challenge-token
+  "The token of the challenge most recently issued for `identifier` — as the ceremony
+  stored it, normalised — or nil. **For a host's tests**, which cannot read the link
+  from a mailbox: every host of this store had written this query by hand. Two
+  challenges issued in the same millisecond share an expiry and cannot be told apart
+  by it; between them the answer is the greater token, which is arbitrary."
+  [ds identifier]
+  (:token (one (datasource! ds)
+               "SELECT token FROM login_challenge WHERE identifier = ? ORDER BY expires_at DESC, token DESC"
+               identifier)))
 
 (defn reclaim-expired!
   "Deletes challenges whose expiry is at or before `now`, and returns how many. The

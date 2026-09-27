@@ -309,23 +309,46 @@
           col cols]
     (on-engines (update aj/ddl i #(str/replace-first % (str col " ") (str col "_drifted ")))
                 (fn [engine ds]
-                  (let [e (try (aj/check! ds) nil (catch SQLException e e))]
-                    (is (some? e) (str engine ": " table "." col " renamed is refused"))
-                    (is (str/includes? (str/lower-case (str (ex-message e))) col)
-                        (str engine ": and the refusal names " col ": " (ex-message e)))))))
+                  (let [e (try (aj/check! ds) nil (catch Throwable e e))]
+                    (is (= {:table table} (ex-data e)) (str engine ": " table "." col " renamed is refused naming its table"))
+                    (is (str/includes? (str (ex-message e)) "copy auth-jdbc/ddl whole")
+                        (str engine ": saying what to do: " (ex-message e)))
+                    (is (and (instance? SQLException (ex-cause e))
+                             (str/includes? (str/lower-case (str (ex-message (ex-cause e)))) col))
+                        (str engine ": with the engine's refusal, naming " col ", as its cause"))))))
   (doseq [[i table] (map (juxt first second) columns)]
     (on-engines (vec (concat (subvec aj/ddl 0 i) (subvec aj/ddl (inc i))))
                 (fn [engine ds]
-                  (let [e (try (aj/check! ds) nil (catch SQLException e e))]
-                    (is (str/includes? (str/lower-case (str (ex-message e))) table)
-                        (str engine ": a missing " table " is named: " (ex-message e))))))))
+                  (let [e (try (aj/check! ds) nil (catch Throwable e e))]
+                    (is (= {:table table} (ex-data e)) (str engine ": a missing " table " is named"))
+                    (is (instance? SQLException (ex-cause e)) (str engine ": the engine's refusal is its cause")))))))
 
 (deftest the-readme-shows-exactly-the-ddl
   (let [readme (slurp (io/file "README.md"))
         block  (second (re-find #"(?s)### A store over JDBC.*?```sql\n(.*?)```" readme))
-        stmts  (some->> block str/split-lines (map str/trim) (remove str/blank?) (mapv #(str/replace % #";$" "")))]
+        stmts  (some->> block str/split-lines (map str/trim) (remove str/blank?) (remove #{"--;;"})
+                        (mapv #(str/replace % #";$" "")))
+        seps   (some->> block str/split-lines (map str/trim) (filter #{"--;;"}) count)]
+    (is (= 2 seps) "ragtime's separator stands between each two statements, so the block pasted whole is three")
     (is (= 3 (count stmts)) (str "precondition: the README's sql block was found: " (pr-str block)))
     (is (= aj/ddl stmts) "the statements a host copies are the ones the library reads")))
+
+(deftest latest-challenge-token-answers-the-most-recent-challenge-of-that-identifier-or-nil
+  (on-engines
+   (fn [engine ds]
+     ;; The older challenge gets the greater token, so a query ordered by token alone —
+     ;; which random tokens would otherwise pass half the time — answers the wrong one.
+     (let [st            (aj/store ds)
+           [new old]     (sort (repeatedly 2 token/mint))
+           bos           (token/mint)]
+       (store/put-challenge! st old ada 1000)
+       (store/put-challenge! st new ada 2000)
+       (store/put-challenge! st bos "bo@x.test" 3000)
+       (is (= new (aj/latest-challenge-token ds ada))
+           (str engine ": the challenge issued last for that identifier — not the older one, and not"
+                " the newest of another identifier"))
+       (is (= bos (aj/latest-challenge-token ds "bo@x.test")) (str engine ": each identifier its own"))
+       (is (nil? (aj/latest-challenge-token ds "nobody@x.test")) (str engine ": nil when none was issued"))))))
 
 ;; --- 6 · refusals -------------------------------------------------------------------------------
 
@@ -337,7 +360,8 @@
            calls  [["store" aj/store []] ["check!" aj/check! []] ["subject-for" aj/subject-for [ada]]
                    ["identifier-for" aj/identifier-for ["s"]] ["register!" aj/register! [ada]]
                    ["generation" aj/generation ["s"]] ["bump-generation!" aj/bump-generation! ["s"]]
-                   ["reclaim-expired!" aj/reclaim-expired! [0]]]]
+                   ["reclaim-expired!" aj/reclaim-expired! [0]]
+                   ["latest-challenge-token" aj/latest-challenge-token [ada]]]]
        (doseq [[label f args] calls
                [bad what type] [[{:datasource ds} "a map" "clojure.lang.PersistentArrayMap"]
                                 ["jdbc:h2:mem:x" "java.lang.String" "java.lang.String"]]]
