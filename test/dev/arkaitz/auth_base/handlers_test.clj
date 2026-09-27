@@ -22,7 +22,7 @@
   (:import [clojure.lang ExceptionInfo]))
 
 (defn- fixture
-  [{:keys [subjects forbid rate-limit views]}]
+  [{:keys [subjects forbid rate-limit views normalise]}]
   (let [clock      (atom 1000)
         log        (atom [])
         deliveries (atom [])
@@ -31,7 +31,8 @@
                                        :deliver! (fn [id link] (swap! deliveries conj [id link]))
                                        :link     {:base-url "https://x.test" :redeem-path "/entrar"}
                                        :ttl-ms   500
-                                       :clock    #(deref clock)})]
+                                       :clock    #(deref clock)
+                                       :normalise normalise})]
     (merge {:clock clock :log log :deliveries deliveries :ceremony ceremony :views (or views (atom 0))}
            (handlers/handlers ceremony
                               (cond-> {:view         (fn [_ state]
@@ -158,7 +159,13 @@
       (is (= [320 "/login?ab=sent" [:put-challenge!]]
              [(count longest) (get-in at-edge [:headers "Location"]) (support/calls log)])
           "control: an identifier as long as the ddl's column, 320, is accepted"))
+    (let [padded (str "  " (apply str (repeat 313 "b")) "@x.test")]
+      (submit {"identifier" padded})
+      (is (= [322 [:put-challenge!]] [(count padded) (support/calls log)])
+          "control: what decides is the stored form — 322 as typed, 320 once trimmed, accepted"))
     (doseq [[label form-params] [["an empty field"     {"identifier" ""}]
+                                 ["320 as typed and 321 once lower-cased, the form stored"
+                                  {"identifier" (str "\u0130" (apply str (repeat 312 "c")) "@x.test")}]
                                  ["one character longer than the ddl's column"
                                   {"identifier" (str (apply str (repeat 314 "a")) "@x.test")}]
                                  ["whitespace only"    {"identifier" "   "}]
@@ -172,8 +179,29 @@
             (str "back to the page in its ordinary state, saying nothing that was not asked: " label))
         (is (= [] @log)
             (str "and the store was never touched, so no challenge exists under that key: " label))))
-    (is (= ["ada@x.test" (str (apply str (repeat 313 "a")) "@x.test")] (mapv first @deliveries))
-        "and links went only to the two controls")))
+    (is (= ["ada@x.test" (str (apply str (repeat 313 "a")) "@x.test") (str (apply str (repeat 313 "b")) "@x.test")]
+           (mapv first @deliveries))
+        "and links went only to the three controls")))
+
+(deftest the-bound-is-on-the-hosts-own-normal-form
+  ;; A host normaliser that lengthens: what is stored, and so what is bounded, is its
+  ;; output, never what was typed or what the default rule would make of it.
+  (let [suffixed #(str (str/lower-case (str/trim %)) "#tenant-01")
+        {:keys [issue log deliveries]} (fixture {:normalise suffixed})
+        submit (fn [identifier]
+                 (reset! log [])
+                 (issue (assoc (mock/request :post "/login")
+                               :form-params {"identifier" identifier}
+                               :remote-addr "10.0.0.1")))
+        fits   (str (apply str (repeat 303 "a")) "@x.test")
+        over   (str (apply str (repeat 304 "a")) "@x.test")]
+    (is (= [310 "/login?ab=sent" [:put-challenge!]]
+           [(count fits) (get-in (submit fits) [:headers "Location"]) (support/calls log)])
+        "control: 310 typed, 320 once the host's rule has run, accepted")
+    (is (= [311 "/login" []]
+           [(count over) (get-in (submit over) [:headers "Location"]) (support/calls log)])
+        "311 typed, 321 once the host's rule has run: answered as a blank form, the store untouched")
+    (is (= [(suffixed fits)] (mapv first @deliveries)) "and the one link went to the stored form")))
 
 (deftest a-subject-of-false-is-a-subject-to-the-redeem-handler-too
   ;; SPEC §17 says `false` is a subject module-wide, and `redeem!` goes to real
