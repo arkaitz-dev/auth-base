@@ -392,6 +392,18 @@ unchanged.
 - **Everything about the link's mechanics**: expiry, token format, what a
   second attempt on a spent link says, what a failed delivery shows the person.
 - **The second factor**, named as in scope by the first consumer and designed nowhere.
+- **A second identifier for the same subject** — a person who signs in by email and later
+  wants a mobile, or another address, as the same account. Not the second factor above:
+  that is a second step to enter, this is a second way in. **Decided with the user
+  2026-09-27, not built yet:** once an account exists and its session is established, a
+  subject with only one way to sign in is asked for another — an alternative email and/or
+  a mobile phone. The new identifier is attached only after it has proved itself by a
+  challenge of its own, exactly as the first did; attaching it on the session's word
+  alone would let anyone signed in claim an address that is not theirs. What building it
+  will need: identifiers in a table of their own (many per subject), a change to the store
+  port and to `jdbc`'s `ddl`, and answers to what happens when the new identifier already
+  belongs to another subject and whether one may be removed. A mobile also means an SMS
+  sender, which, like mail, stays the host's (§14).
 - **The rate limit's shape** — by address, by source, or both.
 - **The account lifecycle** past its first act: invitation, address change,
   deactivation. How an account *comes into being* is answered in §6, by `:on-unknown`,
