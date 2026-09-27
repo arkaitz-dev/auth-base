@@ -122,16 +122,26 @@ Optional, and used rather than imposed. `dev.arkaitz.auth-base.integrant` ships 
 key, `:dev.arkaitz.auth-base/ceremony`, and requiring that namespace is what installs it:
 
 ```clojure
-(require '[dev.arkaitz.auth-base.integrant])   ; installs the key
+(require '[dev.arkaitz.auth-base.integrant]   ; installs the key
+         '[dev.arkaitz.auth-base.jdbc :as auth-jdbc]
+         '[dev.arkaitz.db-base.integrant])      ; db-base's key, if that is your database
 
-{:my/auth-config {:store    #ig/ref :my/store
-                  :deliver! send-the-link!
-                  :link     {:base-url "https://host" :redeem-path "/entrar"}}
+(defmethod ig/init-key :my/auth-config [_ {:keys [db]}]
+  (let [ds (auth-jdbc/check! (:datasource db))]
+    {:store      (auth-jdbc/store ds)
+     :on-unknown #(auth-jdbc/register! ds %)
+     :deliver!   send-the-link!
+     :link       {:base-url "https://host" :redeem-path "/entrar"}}))
 
+{:dev.arkaitz.db-base/database   {…}
+ :my/auth-config                 {:db #ig/ref :dev.arkaitz.db-base/database}
  :dev.arkaitz.auth-base/ceremony #ig/ref :my/auth-config}
 ```
 
-Two of the ceremony's entries are functions and one is a protocol implementation, and
+A store of your own goes in the same place: `:my/auth-config` refers to whatever key
+builds it.
+
+Three of the ceremony's entries are functions and one is a protocol implementation, and
 functions do not live in EDN — so you build the map in a key of your own and refer to
 it, exactly as web-base's handler key is fed. `routes` and `handlers` stay ordinary
 function calls: a ceremony without routes is a host mounting its own handlers, while
@@ -197,8 +207,10 @@ Four things worth knowing, all of them proved by the demo's tests:
   above. That is reitit's composition; neither module has to agree to it.
 - **Your view emits the CSRF field.** `(security/csrf-field request)` inside the login
   view. web-base refuses the POST without it, before this module ever runs.
-- **The gate is web-base's.** `:wb/gate wb/subject-present?` on a private route. This
-  module never decides whether a subject may see a page.
+- **The gate is web-base's.** `:wb/gate wb/subject-present?` on the parent of your
+  private routes — `["" {:wb/gate wb/subject-present?} ["/" …] ["/tasks" …]]` — so a
+  route added there later is gated without saying so, and the public ones, auth's
+  included, live outside it. This module never decides whether a subject may see a page.
 - **Rotation happens once.** `auth/establish` sets Ring's `:recreate` metadata, which
   is exactly what `wb/session/rotate` wraps. Do not call both.
 
@@ -307,16 +319,19 @@ store never loads it (tested with next.jdbc 1.3.1048, on H2 and SQLite).
 ```clojure
 (require '[dev.arkaitz.auth-base.jdbc :as auth-jdbc])
 
-(auth-jdbc/check! ds)                         ; at boot: the three tables are as this version reads them
+(def ds (auth-jdbc/check! (:datasource db)))  ; at boot: the tables are as this version reads them; returns ds
 (auth/ceremony {:store      (auth-jdbc/store ds)
-                :on-unknown #(auth-jdbc/register! ds %)
+                :on-unknown #(auth-jdbc/register! ds %)   ; leave it out and nobody new gets in
                 …})
 (auth-jdbc/identifier-for ds subject)         ; the address an account belongs to
 (auth-jdbc/reclaim-expired! ds (System/currentTimeMillis))
 ```
 
 `ds` is a `javax.sql.DataSource` you opened — from db-base, `(:datasource db)` — and
-never a handle or a map, which is refused by name. It runs no migration: copy these
+never a handle or a map, which is refused by name. **Keep `:on-unknown`**: this store
+creates no account on its own, so without the hook an address it has never seen is
+answered as a link that does not work, every time, and nothing is logged — the whole
+sign-up path is closed and the sign-in path looks healthy. It runs no migration: copy these
 three statements, `auth-jdbc/ddl`, into your own, whole, and let `check!` catch a copy
 that lost a table or a column (it reads names, not keys — the keys are what make
 registration and revocation exact):
@@ -361,7 +376,7 @@ something to name when there is no local identity at all.
 | `:clock` | `(fn [])` → epoch milliseconds (default the system clock) |
 | `:bootstrap` | identifiers that hold no record and may still enter |
 | `:normalise` | `(fn [identifier])` → canonical form (default trim + lower-case); `(auth/normalise ceremony id)` applies it, for an address the host stores itself |
-| `:on-unknown` | `(fn [identifier])` → a subject, or nil. How you answer a redemption by somebody you have no record of. Absent, there is no answer and the redemption fails |
+| `:on-unknown` | `(fn [identifier])` → a subject, or nil. How you answer a redemption by somebody you have no record of — `#(auth-jdbc/register! ds %)` with the JDBC store. Absent, there is no answer and the redemption fails: nobody new can ever sign in |
 
 `auth/handlers` and `auth/routes` — likewise:
 
