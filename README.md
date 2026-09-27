@@ -107,7 +107,7 @@ other side of that function. Neither depends on the other — **you** hold both,
 
 ```clojure
 {:deps {org.clojure/clojure   {:mvn/version "1.12.5"}
-        dev.arkaitz/web-base  {:mvn/version "0.5.0"}   ; the web foundation
+        dev.arkaitz/web-base  {:mvn/version "0.6.0"}   ; the web foundation
         dev.arkaitz/auth-base {:mvn/version "0.3.0"}}} ; the ceremony
 ```
 
@@ -240,10 +240,25 @@ born with; `subject-fn` compares them on every request. `revoke!` moves the numb
 and every session of that subject stops yielding a subject at its next request — in
 this browser and in any other, with any store, including the cookie.
 
-Its cost is one store read per request, which you may cache, and its bound is that
-revocation takes effect on the next request rather than instantly.
+Its cost is one store read per signed-in request — an indexed read, measured at 9.7 µs
+on SQLite, after the one your session store already makes — and its bound is that
+revocation takes effect on the next request rather than instantly. A cache would move
+that bound to "when the cache expires", which is a different revocation.
+
 `(auth/wrap-revoked handler ceremony)` is optional and additionally throws the dead
-cookie away.
+session away. Under web-base, put it in the route data, where reitit runs it inside the
+session layer:
+
+```clojure
+:routes [["" {:middleware [[auth/wrap-revoked ceremony]]}
+          ["/"   …]
+          ["/me" …]]]
+```
+
+After `revoke!`, the next request through those routes deletes the session (the row,
+with a server-side store). Routes outside the router — the default 404, and web-base's
+`:sessionless` routes — are not covered; a revoked session there still yields no
+subject, and its row goes when it expires.
 
 ## The store port
 

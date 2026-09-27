@@ -42,7 +42,12 @@
   It is also where revocation takes effect: the session carries the generation
   it was born with, this compares it against the store's, and a session whose
   generation has moved on stops yielding a subject. A session with no
-  generation at all is not one this module established, and gets nothing."
+  generation at all is not one this module established, and gets nothing.
+
+  Its cost is one read of the generation per signed-in request — indexed, 9.7 µs
+  on SQLite (measured 2026-09-27) — and none for an anonymous one. Caching it
+  would make revocation take effect when the cache expires, not at the next
+  request."
   [ceremony]
   (fn [request]
     (let [session (:session request)]
@@ -61,7 +66,9 @@
   safe to wrap around a login.
 
   The handler comes first, as every Ring middleware's does, so it threads:
-  `(-> app (wrap-revoked ceremony) wrap-params wrap-session)`. The three acts
+  `(-> app (wrap-revoked ceremony) wrap-params wrap-session)`. Under web-base it
+  goes in route data, `{:middleware [[wrap-revoked ceremony]]}`, which reitit runs
+  inside the session layer; routes outside the router are not covered. The three acts
   of the ceremony take the ceremony first instead; the two conventions
   disagree and Ring's wins inside a stack, because getting it wrong there
   costs nothing visible — a Clojure map is callable, so a swapped pair returns
