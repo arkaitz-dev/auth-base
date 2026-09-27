@@ -153,7 +153,14 @@
           "control: and lands on the page that says a link went out")
       (is (= [:put-challenge!] (support/calls log))
           "control: and reached the store, so the empty logs below mean something"))
+    (let [longest (str (apply str (repeat 313 "a")) "@x.test")
+          at-edge (submit {"identifier" longest})]
+      (is (= [320 "/login?ab=sent" [:put-challenge!]]
+             [(count longest) (get-in at-edge [:headers "Location"]) (support/calls log)])
+          "control: an identifier as long as the ddl's column, 320, is accepted"))
     (doseq [[label form-params] [["an empty field"     {"identifier" ""}]
+                                 ["one character longer than the ddl's column"
+                                  {"identifier" (str (apply str (repeat 314 "a")) "@x.test")}]
                                  ["whitespace only"    {"identifier" "   "}]
                                  ["no field at all"    {}]
                                  ["a repeated field, as wrap-params yields it"
@@ -165,8 +172,8 @@
             (str "back to the page in its ordinary state, saying nothing that was not asked: " label))
         (is (= [] @log)
             (str "and the store was never touched, so no challenge exists under that key: " label))))
-    (is (= 1 (count @deliveries))
-        "and exactly one link was ever delivered — the control's")))
+    (is (= ["ada@x.test" (str (apply str (repeat 313 "a")) "@x.test")] (mapv first @deliveries))
+        "and links went only to the two controls")))
 
 (deftest a-subject-of-false-is-a-subject-to-the-redeem-handler-too
   ;; SPEC §17 says `false` is a subject module-wide, and `redeem!` goes to real

@@ -94,13 +94,20 @@
   [ms]
   (quot (+ ms 999) 1000))
 
+(def ^:private max-identifier-length
+  "The longest identifier the form takes: the width of `login_challenge.identifier` in
+  `auth-jdbc/ddl`. Beyond it the JDBC store's insert is refused by the engine — a 500 —
+  on every engine but SQLite, which stores it whole; bounded here, it is the same
+  answer everywhere, and no address that works in mail is that long."
+  320)
+
 (defn- submitted?
   "Whether the form field holds something `issue!` will accept. Deliberately not
   shared with the ceremony's own check, though the two agree: that one guards a
   contract and refuses, this one decides what to render, and folding them
   together would make a page's wording a reason to loosen a library's rule."
   [v]
-  (and (string? v) (not (str/blank? v))))
+  (and (string? v) (not (str/blank? v)) (<= (count v) max-identifier-length)))
 
 (defn handlers
   "The four handlers, as a map. Mount them yourself, or hand the same options
@@ -168,8 +175,9 @@
            (if (submitted? identifier)
              (do (ceremony/issue! ceremony identifier)
                  sent)
-             ;; Nobody typed anything, or the field was never there — a POST
-             ;; made by hand, or a `:field` that does not match the form. Back
+             ;; Nobody typed anything, the field was never there — a POST made
+             ;; by hand, or a `:field` that does not match the form — or what was
+             ;; typed is longer than any address that works in mail. Back
              ;; to the page in its ordinary state: `issue!` refuses all three
              ;; shapes, and letting that throw would turn an empty submission
              ;; into a 500. No new view state is invented for it, because there
