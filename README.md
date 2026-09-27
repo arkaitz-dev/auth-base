@@ -113,8 +113,8 @@ other side of that function. Neither depends on the other — **you** hold both,
 
 web-base brings reitit-ring, hiccup, ring-jetty-adapter, tools.logging, tempura,
 ring-anti-forgery and integrant. auth-base brings `ring-core`, which web-base already
-had, and integrant, which it already had too. Nothing is duplicated and neither library
-can see the other.
+had, integrant, which it already had too, and `tools.logging`, likewise. Nothing is
+duplicated and neither library can see the other.
 
 ### Wiring it with Integrant
 
@@ -239,7 +239,10 @@ fact about the type, asks the store nothing, and leaves the rule above intact.
 
 **A delivery failure is not an authentication failure.** If your `deliver!` throws, the
 caller is told nothing — telling them would tell them something about the address — the
-challenge still stands, and the failure is printed to `*err*` where an operator sees it.
+challenge still stands, and the failure is logged at WARN through `clojure.tools.logging`
+— the facade web-base logs through, so the line carries the request id and reaches your
+backend — naming only the address's domain, with the exception as its cause. An `Error`
+is not a delivery failing, and propagates.
 
 ## Revocation
 
@@ -325,6 +328,7 @@ store never loads it (tested with next.jdbc 1.3.1048, on H2 and SQLite).
                 …})
 (auth-jdbc/identifier-for ds subject)         ; the address an account belongs to
 (auth-jdbc/reclaim-expired! ds (System/currentTimeMillis))
+(auth-jdbc/latest-challenge-token ds "ada@example.com")  ; in a host's tests: the link's token
 ```
 
 `ds` is a `javax.sql.DataSource` you opened — from db-base, `(:datasource db)` — and
@@ -338,13 +342,22 @@ registration and revocation exact):
 
 ```sql
 CREATE TABLE account (subject VARCHAR(36) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL UNIQUE, created_at BIGINT NOT NULL);
+--;;
 CREATE TABLE account_generation (subject VARCHAR(36) NOT NULL PRIMARY KEY, generation BIGINT NOT NULL);
+--;;
 CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL);
 ```
 
+The `--;;` lines are ragtime's separator, which db-base's migrations run through: the
+block pasted whole into one `.up.sql` file is three statements. Without them SQLite's
+driver runs the first and silently drops the rest, and the migration is recorded as
+applied all the same; `check!` then names the table that is missing.
+
 Every statement is portable: `take-challenge!` reads and then deletes, and **the delete's
 count decides** who redeemed the link; a revocation moves its generation by
-compare-and-set. `register!` stores the identifier as given — pass it through
+compare-and-set. `register!` answers the subject as a string, a UUID's spelling — what
+`:wb/subject` then carries and what `revoke!` takes, so a host's own tables keep it in a
+`VARCHAR(36)`. It stores the identifier as given — pass it through
 `auth/normalise` when it did not come from the ceremony — and is not for use inside a
 transaction you opened. An address longer than 320 characters is refused by the engine
 — SQLite, which ignores declared widths, excepted — and reaches your error handling as
