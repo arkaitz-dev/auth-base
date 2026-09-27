@@ -16,7 +16,11 @@
         ;; 2026-09-22, when the first host asked for it; its whole closure,
         ;; integrant plus weavejester/dependency, reaches every consumer, and
         ;; that cost is what the dependency-closure test exists to keep visible.
-        integrant/integrant {:mvn/version "1.0.1"}}
+        integrant/integrant {:mvn/version "1.0.1"}
+        ;; SPEC §3, amended 2026-09-28: the facade web-base already logs through, so a
+        ;; delivery failure carries the request id and reaches the host's backend. No
+        ;; backend, which is the host's; a web-base host receives nothing new.
+        org.clojure/tools.logging {:mvn/version "1.3.1"}}
 
  :aliases
  {:test {:extra-paths ["test" "build" "harness/src" "harness/test" "demo/src" "demo/resources" "demo/test"]

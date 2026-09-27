@@ -19,6 +19,7 @@
   reach the caller, because reaching the caller means telling them something
   about the address; it goes to the operator instead."
   (:require [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.token :as token]))
 
@@ -110,6 +111,14 @@
      :normalise  normalise
      :on-unknown on-unknown}))
 
+(defn- domain-of
+  "What an operator may read of an address that could not be reached: its domain, which
+  says which transport failed, and never the local part, which says who."
+  [identifier]
+  (if-let [at (str/last-index-of identifier "@")]
+    (str "an address at " (subs identifier (inc at)))
+    "an identifier with no domain"))
+
 (defn- link-for [{:keys [base-url redeem-path]} token]
   (str base-url redeem-path "/" token))
 
@@ -146,10 +155,12 @@
       (deliver! identifier (link-for link token))
       ;; SPEC §8: it must not tell the caller whether the address was known —
       ;; and a thrown delivery is a fact about transport, not about the
-      ;; address — so it stops here and goes where an operator will see it.
-      (catch Throwable t
-        (binding [*out* *err*]
-          (println "auth-base: delivery failed for" (pr-str identifier) "-" (ex-message t)))))
+      ;; address — so it stops here and goes where an operator will see it:
+      ;; through tools.logging, as web-base logs, so it carries the request id
+      ;; the base puts in the MDC and reaches the backend the host chose. An
+      ;; Error is not a delivery failing and is not caught.
+      (catch Exception e
+        (log/warn e (str "auth-base: delivery failed for " (domain-of identifier)))))
     nil))
 
 (defn subject-of

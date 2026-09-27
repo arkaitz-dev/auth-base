@@ -68,6 +68,12 @@ the amendment is narrow on purpose: Integrant is a wiring convention the other t
 modules of this set already ship a key for, and a host that had to write that key itself
 for one of three would be paying for the asymmetry rather than for the independence.
 
+**Amended again 2026-09-28: `org.clojure/tools.logging`**, for §8's one log line. It is
+a facade with no dependency of its own and no backend — the host chooses that — and a
+web-base host already receives it, so what a consumer of the set receives does not
+change. It is not a dependency on web-base: what the two share is a stable third
+party's facade and the SLF4J MDC key web-base documents, `request-id`.
+
 **It is not free, and the price is named rather than waved through.** The closure that
 reaches every consumer grows by Integrant and its own `weavejester/dependency`, whether
 they wire with it or not. §15 records the decision; `structure_test` holds both the scan
@@ -236,6 +242,17 @@ blocks only recovery; with magic links it blocks entry, on the eve of a junta.*
 The consequence for this module is narrow and must be honoured: **a delivery failure
 is not an authentication failure.** It must not tell the caller whether the address
 was known, and it must be logged where an operator will see it.
+
+**Amended 2026-09-28, decided with the user.** "Where an operator will see it" had been a
+`println` to `*err*` catching every `Throwable`, with the whole address in it: past the
+host's logging backend, without the request id, and with a person's address in an
+unstructured stream. It is now one WARN through `clojure.tools.logging` — the facade
+web-base logs through, so the line carries the request id the base puts in the MDC and
+reaches whatever backend the host configured — naming the address's **domain only**,
+which says which transport failed and never who, with the exception as its cause. It
+catches `Exception`: an `Error` is not a delivery failing, and it propagates as it does
+through the other two libraries of this set. A host whose mail code asserts now sees
+its assertion rather than a page saying the link is on its way.
 
 ## 9 · Establishing the session
 

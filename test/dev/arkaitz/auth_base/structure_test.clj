@@ -3,7 +3,8 @@
   signal any of them will ever produce.
 
   **The dependency (SPEC §3).** `auth-base` depends on `ring/ring-core` and
-  nothing else, save the Integrant that one optional namespace loads. The reason
+  nothing else, save the Integrant that one optional namespace loads and the
+  tools.logging facade SPEC §8's one log line goes through. The reason
   is not tidiness: a module built on web-base could only ever be lifted with
   web-base attached, which is exactly what made Django's `contrib.auth`
   impossible to extract and the reason this repository is separate. Any library
@@ -452,7 +453,11 @@
     ;; the same cost for the same reason. A consumer that does not use Integrant
     ;; loads neither.
     integrant/integrant                          "SPEC §3's optional key, loaded only by dev.arkaitz.auth-base.integrant"
-    weavejester/dependency                       "integrant's"})
+    weavejester/dependency                       "integrant's"
+    ;; Decided 2026-09-28 (SPEC §3, §8): the facade §8's one log line goes through,
+    ;; which web-base already brings to every host of the set. No dependency of its
+    ;; own and no backend.
+    org.clojure/tools.logging                    "SPEC §8's delivery-failure line"})
 
 (defn- maven-entry-pattern [lib]
   (let [group    (namespace lib)
@@ -491,9 +496,9 @@
         lib-of       (fn [entry] (first (for [lib (keys accepted-closure)
                                               :when (re-find (maven-entry-pattern lib) entry)]
                                           lib)))]
-    (is (= '#{org.clojure/clojure ring/ring-core integrant/integrant} declared)
-        (str "SPEC §3: deps.edn declares the language, ring-core, and the Integrant that only"
-             " the optional namespace may load — found " (sort declared)))
+    (is (= '#{org.clojure/clojure ring/ring-core integrant/integrant org.clojure/tools.logging} declared)
+        (str "SPEC §3: deps.edn declares the language, ring-core, the Integrant that only"
+             " the optional namespace may load, and the logging facade — found " (sort declared)))
     (when (is (nil? error) (str "precondition: the consumer's classpath was resolved — " error))
       (let [received (set (keep lib-of entries))]
         (testing "controls: the resolution is a consumer's, not this test run's"

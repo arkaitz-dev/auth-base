@@ -12,6 +12,7 @@
   timing is `deliver!`'s, and that is the host's."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [clojure.tools.logging.test :as lt]
             [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.store :as store]
@@ -229,27 +230,50 @@
     (is (nil? (ceremony/redeem! ceremony (token-of (second (first @deliveries)))))
         "which is a different account from ada@x.test, and there is none")))
 
-(deftest a-delivery-that-throws-is-not-an-authentication-failure
-  (doseq [[label thrown] [["an exception" (ex-info "boom" {})]
-                          ;; The catch is on Throwable, not Exception: an
-                          ;; assertion inside a host's mail code is still a
-                          ;; delivery failure, not an authentication one.
-                          ["an error"     (AssertionError. "boom")]]]
-    (let [{:keys [ceremony log]} (fixture {:subjects {"ada@x.test" {:id 1}}
-                                           :deliver! (fn [_ _] (throw thrown))})
-          err  (java.io.StringWriter.)
-          out  (java.io.StringWriter.)
-          returned (binding [*err* err *out* out]
-                     (ceremony/issue! ceremony "ada@x.test"))]
-      (is (nil? returned) (str "the caller is told nothing: " label))
-      (is (= [:put-challenge!] (support/calls log))
-          (str "and the challenge was recorded before delivery was attempted: " label))
-      (is (= "auth-base: delivery failed for \"ada@x.test\" - boom\n" (str err))
-          (str "the operator is told, on *err*: " label))
-      (is (= "" (str out))
-          (str "and not on *out*, which a host may be using for something else: " label))
-      (is (= {:id 1} (ceremony/redeem! ceremony (nth (first @log) 1)))
-          (str "and the link still works, because the failure was the transport's: " label)))))
+(deftest a-delivery-that-throws-an-exception-is-logged-at-warn-by-domain-and-is-not-an-authentication-failure
+  (let [thrown (ex-info "boom" {})
+        {:keys [ceremony log]} (fixture {:subjects {"ada@x.test" {:id 1}}
+                                         :deliver! (fn [_ _] (throw thrown))})
+        err (java.io.StringWriter.)
+        out (java.io.StringWriter.)]
+    (lt/with-log
+      (let [returned (binding [*err* err *out* out]
+                       (ceremony/issue! ceremony "ada@x.test"))
+            entries  (lt/the-log)]
+        (is (nil? returned) "the caller is told nothing")
+        (is (= [:put-challenge!] (support/calls log))
+            "and the challenge was recorded before delivery was attempted")
+        (is (= [[:warn "dev.arkaitz.auth-base.ceremony" thrown "auth-base: delivery failed for an address at x.test"]]
+               (mapv (juxt :level (comp str :logger-ns) :throwable :message) entries))
+            "the operator is told once, at WARN, through tools.logging, with the exception as its cause")
+        (is (not-any? #(str/includes? (str (:message %)) "ada") entries)
+            "by the address's domain, never its local part")
+        (is (= ["" ""] [(str err) (str out)]) "and nothing is printed around the host's logging")))
+    (is (= {:id 1} (ceremony/redeem! ceremony (nth (first @log) 1)))
+        "the link still works, because the failure was the transport's")))
+
+(deftest a-delivery-failure-names-no-part-of-an-address-but-its-last-domain
+  ;; The ceremony takes any string as an identifier, so the log line must hold for one
+  ;; with no @, and for one with two, whose middle is still a local part.
+  (doseq [[identifier expected] [["a@b@x.test" "auth-base: delivery failed for an address at x.test"]
+                                 ["+34600000000" "auth-base: delivery failed for an identifier with no domain"]]]
+    (let [{:keys [ceremony]} (fixture {:deliver! (fn [_ _] (throw (ex-info "boom" {})))})]
+      (lt/with-log
+        (ceremony/issue! ceremony identifier)
+        (is (= [expected] (mapv :message (lt/the-log))) (pr-str identifier))))))
+
+(deftest an-error-in-delivery-is-not-caught
+  ;; SPEC §8, amended 2026-09-28: an Error is not a delivery failing — it propagates,
+  ;; as it does through the other two libraries of this set.
+  (let [thrown (AssertionError. "boom")
+        {:keys [ceremony log]} (fixture {:subjects {"ada@x.test" {:id 1}}
+                                         :deliver! (fn [_ _] (throw thrown))})]
+    (lt/with-log
+      (is (identical? thrown (try (ceremony/issue! ceremony "ada@x.test") ::returned
+                                  (catch Throwable t t)))
+          "the Error reaches the caller untouched")
+      (is (= [] (lt/the-log)) "and is not logged as a delivery failure"))
+    (is (= [:put-challenge!] (support/calls log)) "the challenge had been recorded before")))
 
 ;; --- redeem ---------------------------------------------------------------
 
