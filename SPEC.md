@@ -174,8 +174,12 @@ has already vouched for it. `issue!` still asks nothing and still branches on no
 
 **The obligation that comes with it, and it is the host's.** What the hook returns must
 be `=` to what `subject-for` answers for that identifier from then on, and to what
-`revoke!` is called with. The module cannot check this without asking the store a
-question it has already answered, and the cost of breaking it is silent and total: the
+`revoke!` is called with. **Checked since 2026-09-27**: the ceremony asks the store once
+more, at registration only, and refuses a hook whose answer the store does not give back
+(it had said this "cannot be checked without asking a question already answered" — one
+read at registration is a small price for a revocation that works; it asks in return that
+`subject-for` read the hook's write at once — no lagging replica, no cached miss). The cost of breaking
+it, unchecked, was silent and total: the
 session freezes the returned value, every later request re-reads the generation keyed on
 *that* value, and a revocation moves the generation of the value the store answers with.
 Two keys, so the session born at registration compares 0 against 0 for ever and **§10's

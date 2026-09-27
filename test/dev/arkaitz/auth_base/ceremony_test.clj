@@ -22,7 +22,7 @@
   "A ceremony over a recording store, with the clock, the log and the
   deliveries the test reads. Non-default values throughout, so a handler or a
   ceremony that ignored its configuration could not coincide with the test."
-  [{:keys [subjects bootstrap forbid deliver! ttl-ms normalise on-unknown]}]
+  [{:keys [subjects bootstrap forbid deliver! ttl-ms normalise on-unknown registers]}]
   (let [clock      (atom 1000)
         log        (atom [])
         deliveries (atom [])
@@ -49,7 +49,14 @@
                     on-unknown (assoc :on-unknown
                                       (fn [identifier]
                                         (swap! log conj [:on-unknown identifier])
-                                        (on-unknown identifier)))))}))
+                                        (on-unknown identifier)))
+                    ;; A hook that does what the contract asks: it writes the account
+                    ;; into the store and answers what the store will answer from then on.
+                    (some? registers) (assoc :on-unknown
+                                             (fn [identifier]
+                                               (swap! log conj [:on-unknown identifier])
+                                               (swap! (.-state inner) assoc-in [:subjects identifier] registers)
+                                               registers))))}))
 
 (defn- token-of [link] (last (str/split link #"/")))
 
@@ -126,9 +133,13 @@
                    :on-unknown {"canon" {:id :from-a-map}}})]
     (store/put-challenge! inner token "  Ada@X.test " 1500)
     (reset! log [])
-    (is (= {:id :from-a-map} (ceremony/redeem! ceremony token))
+    ;; A map cannot write the account it answers with, so the check that follows a
+    ;; hook's answer refuses it — and the refusal is the proof the map WAS called: a
+    ;; hook that answered nothing is never checked.
+    (is (= {:config-key [:on-unknown]}
+           (try (ceremony/redeem! ceremony token) nil (catch ExceptionInfo e (ex-data e))))
         "the map answered as the hook, so the call site asks ifn? of it and not fn?")
-    (is (= [[:take-challenge! token] [:subject-for "canon"]] @log)
+    (is (= [[:take-challenge! token] [:subject-for "canon"] [:subject-for "canon"]] @log)
         (str "and the store was asked under the map's own canon — the library's default would "
              "have spelled it \"ada@x.test\", which is the other half of the same narrowing"))))
 
@@ -331,14 +342,14 @@
             "no hook, no answer: the redemption yields nothing")
         (is (= [[:take-challenge! token] [:subject-for "ada@x.test"]] @log)
             "and the store was asked exactly what it was asked before this key existed")))
-    (testing "present, its answer is the subject — asked once, asked last, asked canonically"
+    (testing "present, its answer is the subject — asked once, after the store, canonically, and checked against the store"
       (let [{:keys [ceremony log inner]}
-            (fixture {:bootstrap [] :on-unknown (constantly minted-by-hook)})]
+            (fixture {:bootstrap [] :registers minted-by-hook})]
         (store/put-challenge! inner token raw 1500)
         (reset! log [])
         (is (= minted-by-hook (ceremony/redeem! ceremony token))
             "what the host's hook answered is what the redemption yields")
-        (is (= [[:take-challenge! token] [:subject-for "ada@x.test"] [:on-unknown "ada@x.test"]] @log)
+        (is (= [[:take-challenge! token] [:subject-for "ada@x.test"] [:on-unknown "ada@x.test"] [:subject-for "ada@x.test"]] @log)
             (str "asked after the store had its say, and with \"ada@x.test\" rather than the "
                  (pr-str raw) " the row holds: a hook handed the raw spelling registers a "
                  "second account for the same person the next time they type it differently"))))
@@ -351,12 +362,13 @@
       (let [{:keys [ceremony log inner]}
             (fixture {:bootstrap  []
                       :normalise  (fn [id] (str "host:" (str/trim (str id))))
-                      :on-unknown (constantly minted-by-hook)})]
+                      :registers minted-by-hook})]
         (store/put-challenge! inner token raw 1500)
         (reset! log [])
         (is (= minted-by-hook (ceremony/redeem! ceremony token))
             "the host's rule does not change who answers")
-        (is (= [[:take-challenge! token] [:subject-for "host:Ada@X.test"] [:on-unknown "host:Ada@X.test"]]
+        (is (= [[:take-challenge! token] [:subject-for "host:Ada@X.test"] [:on-unknown "host:Ada@X.test"]
+                [:subject-for "host:Ada@X.test"]]
                @log)
             (str "and the hook is handed exactly what the store was asked about — a hook given "
                  "this library's default while the store was asked the host's form would look for "
@@ -366,7 +378,7 @@
   (let [{:keys [ceremony log deliveries]}
         (fixture {:subjects   {"ada@x.test" {:id 1} "f@x.test" false}
                   :bootstrap  ["admin@x.test"]
-                  :on-unknown (constantly minted-by-hook)})
+                  :registers minted-by-hook})
         redeem (fn [identifier]
                  (ceremony/issue! ceremony identifier)
                  (let [token (token-of (second (last @deliveries)))]
@@ -378,7 +390,8 @@
     (let [[subject token] (redeem "nobody@x.test")]
       (is (= minted-by-hook subject)
           "control: with no record and no bootstrap entry, the hook is asked and its answer stands")
-      (is (= [[:take-challenge! token] [:subject-for "nobody@x.test"] [:on-unknown "nobody@x.test"]] @log)
+      (is (= [[:take-challenge! token] [:subject-for "nobody@x.test"] [:on-unknown "nobody@x.test"]
+              [:subject-for "nobody@x.test"]] @log)
           "control: and the call shows in this log, so an absence below is an absence"))
     (let [[subject token] (redeem "ada@x.test")]
       (is (= {:id 1} subject)
@@ -423,14 +436,15 @@
   ;; No :subjects at all: with a record for this address the hook would be
   ;; unreachable by every path below and every absence would be vacuous.
   (let [{:keys [ceremony clock log inner deliveries]}
-        (fixture {:bootstrap [] :on-unknown (constantly minted-by-hook)})
+        (fixture {:bootstrap [] :registers minted-by-hook})
         never-held (str/join (repeat 43 "B"))]
     (ceremony/issue! ceremony "nobody@x.test")
     (let [control (token-of (second (last @deliveries)))]
       (reset! log [])
       (is (= minted-by-hook (ceremony/redeem! ceremony control))
           "control: a valid token for this identifier does reach the hook")
-      (is (= [[:take-challenge! control] [:subject-for "nobody@x.test"] [:on-unknown "nobody@x.test"]] @log)
+      (is (= [[:take-challenge! control] [:subject-for "nobody@x.test"] [:on-unknown "nobody@x.test"]
+              [:subject-for "nobody@x.test"]] @log)
           "control: so every absence below is an absence"))
     (reset! clock 1000)
     (ceremony/issue! ceremony "nobody@x.test")
@@ -482,7 +496,7 @@
   ;; them could read. The pre-existing anti-enumeration test cannot see it
   ;; either: it configures no hook at all.
   (let [{:keys [ceremony log]}
-        (fixture {:subjects {"known@x.test" {:id 1}} :on-unknown (constantly minted-by-hook)})]
+        (fixture {:subjects {"known@x.test" {:id 1}} :registers minted-by-hook})]
     ;; Spelled raw, so the canonical assertion below is not comparing a string
     ;; with itself: trim and lower-case are no-ops on an address that already
     ;; arrived canonical, and `issue!` losing its `normalise` call would be
@@ -508,7 +522,7 @@
   ;; attested — and would do it while producing the very same log the redemption
   ;; tests expect, which is why reading those is not enough to rule it out.
   (let [{:keys [ceremony log]}
-        (fixture {:subjects {"known@x.test" {:id 1}} :on-unknown (constantly minted-by-hook)})]
+        (fixture {:subjects {"known@x.test" {:id 1}} :registers minted-by-hook})]
     (is (= {:id 1} (ceremony/subject-of ceremony "known@x.test"))
         "control: subject-of does answer, in this fixture, with this hook configured")
     (reset! log [])
@@ -518,18 +532,18 @@
         "which the log says outright: the store was asked, the hook was not")))
 
 (deftest redeem!-carries-:on-unknown's-answer-back-unchanged--false-included--and-never-swallows-its-throw
-  (let [redeem-with (fn [hook]
-                      (let [{:keys [ceremony deliveries]} (fixture {:bootstrap [] :on-unknown hook})]
+  (let [redeem-with (fn [options]
+                      (let [{:keys [ceremony deliveries]} (fixture (assoc options :bootstrap []))]
                         (ceremony/issue! ceremony "nobody@x.test")
                         (ceremony/redeem! ceremony (token-of (second (last @deliveries))))))]
-    (is (= minted-by-hook (redeem-with (constantly minted-by-hook)))
+    (is (= minted-by-hook (redeem-with {:registers minted-by-hook}))
         "control: an ordinary answer comes back, so the false below is not a nil wearing a costume")
-    (is (false? (redeem-with (constantly false)))
+    (is (false? (redeem-with {:registers false}))
         (str "false is a subject on the way out as well as on the way in: this suite insists on it "
              "when the STORE says false, and a `when-let` around the hook would drop it just as "
              "quietly on this side"))
     (is (thrown-with-msg? ExceptionInfo #"the host's registration failed"
-                          (redeem-with (fn [_] (throw (ex-info "the host's registration failed" {})))))
+                          (redeem-with {:on-unknown (fn [_] (throw (ex-info "the host's registration failed" {})))}))
         (str "and a hook that throws throws: a registration that hit a constraint must reach the "
              "host as a failure, never be caught here and answered as nobody"))))
 
@@ -540,7 +554,7 @@
   (let [{:keys [ceremony log deliveries]}
         (fixture {:subjects   {"ada@x.test" {:id 1}}
                   :forbid     #{:subject-for}
-                  :on-unknown (constantly minted-by-hook)})]
+                  :registers minted-by-hook})]
     (ceremony/issue! ceremony "ada@x.test")
     (let [token (token-of (second (last @deliveries)))]
       (reset! log [])
@@ -608,7 +622,7 @@
     (doseq [[rule normalise expected] [["the default" nil "ada@x.test"]
                                        ["a host's own rule" (fn [id] (str (str/trim (str id)) "#host")) "Ada@X.test#host"]]]
       (let [{:keys [ceremony log inner]} (fixture {:subjects {} :normalise normalise
-                                                   :on-unknown (constantly "minted-by-hook")})
+                                                   :registers "minted-by-hook"})
             n (auth/normalise ceremony raw)]
         (is (= expected n) (str rule ": normalise, through the facade"))
         (auth/issue! ceremony raw)
@@ -619,5 +633,43 @@
         (store/put-challenge! inner token raw 1500)
         (reset! log [])
         (auth/redeem! ceremony token)
-        (is (= [[:take-challenge! token] [:subject-for n] [:on-unknown n]] @log)
+        (is (= [[:take-challenge! token] [:subject-for n] [:on-unknown n] [:subject-for n]] @log)
             (str rule ": redeeming a raw row asked the store and the hook for exactly that form"))))))
+
+;; --- :on-unknown's answer is checked -------------------------------------------
+
+(deftest a-hook-whose-answer-the-store-does-not-give-back-is-refused-by-name
+  ;; The contract, enforced: what the hook returns is frozen into the session, and a
+  ;; revocation moves the generation of what `subject-for` answers. Values that print
+  ;; alike and are not `=` are the realistic way to break it.
+  (let [id (random-uuid)]
+    (doseq [[label answers stores] [["a UUID against its text" id (str id)]
+                                    ["a map against the id inside it" {:id 7} 7]
+                                    ["a hook that wrote nothing" {:id 8} nil]]]
+      (let [box (atom nil)
+            {:keys [ceremony log inner deliveries]}
+            (fixture {:bootstrap  []
+                      :on-unknown (fn [identifier]
+                                    (when (some? stores)
+                                      (swap! (.-state @box) assoc-in [:subjects identifier] stores))
+                                    answers)})]
+        (reset! box inner)
+        (ceremony/issue! ceremony "nobody@x.test")
+        (let [token (token-of (second (last @deliveries)))
+              e     (try (ceremony/redeem! ceremony token) nil (catch ExceptionInfo e e))]
+          (is (= {:config-key [:on-unknown]} (ex-data e)) (str label ": refused, naming the key"))
+          (is (str/includes? (str (ex-message e)) "could never be revoked") (str label ": and why"))
+          (is (not-any? #(str/includes? (pr-str [(ex-message e) (ex-data e)]) %)
+                        ["nobody@x.test" (str id) ":id"])
+              (str label ": echoing neither the address nor either subject"))
+          (is (nil? (get-in (deref (.-state inner)) [:challenges token]))
+              (str label ": and the link is spent all the same — the refusal fails closed")))))))
+
+(deftest an-ordinary-sign-in-never-pays-the-check
+  (let [{:keys [ceremony log deliveries]} (fixture {:subjects {"ada@x.test" {:id 1}} :registers minted-by-hook})]
+    (ceremony/issue! ceremony "ada@x.test")
+    (let [token (token-of (second (last @deliveries)))]
+      (reset! log [])
+      (is (= {:id 1} (ceremony/redeem! ceremony token)))
+      (is (= [[:take-challenge! token] [:subject-for "ada@x.test"]] @log)
+          "one question to the store: the second is asked at registration only"))))

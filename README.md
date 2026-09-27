@@ -289,7 +289,13 @@ and nowhere else. What it returns must be `=` to what `subject-for` answers for 
 identifier afterwards and to what you pass `revoke!`. Return the row you just wrote,
 not the row plus a flag saying it was new: the session freezes this value and re-reads
 its revocation generation on every request, so a value the store will never answer with
-is a session no revocation can end.
+would be a session no revocation can end. **The ceremony checks it**: after your hook
+answers, it asks `subject-for` once more for the same identifier and refuses — by name,
+echoing neither the address nor the subject — a hook whose answer the store does not give
+back. That second read happens at registration only; an ordinary sign-in never pays it.
+So `subject-for` must see your hook's write the moment the hook returns — read your own
+writes: a lagging replica, a cached negative answer, or a registration still uncommitted
+in a transaction of yours would have every new account refused.
 
 ### A store over JDBC
 

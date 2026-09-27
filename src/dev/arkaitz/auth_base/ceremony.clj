@@ -188,17 +188,17 @@
   a subject like any other, and a host whose store answers `false` must not be
   told it has no record and asked to make one.
 
-  **What `:on-unknown` returns must be `=` to what `subject-for` will answer for
-  that identifier from then on, and to what `revoke!` will be called with.** This
-  is the host's to honour and cannot be checked here without asking the store a
-  second question it has already answered. The cost of breaking it is silent and
-  total: `establish` freezes the returned value into the session, every later
-  request re-reads `generation` keyed on *that* value, and a revocation moves the
-  generation of the value the store answers with. Two different keys, so the
-  session born at registration compares 0 against 0 for ever and **no revocation
-  can ever end it** — SPEC §10 defeated on the one path this key creates. A hook
-  that returns the row it just wrote, rather than that row plus a flag saying it
-  was new, is the whole of the discipline."
+  **What `:on-unknown` returns must be `=` to what `subject-for` answers for that
+  identifier from then on, and it is checked.** `establish` freezes the returned
+  value into the session, every later request re-reads `generation` keyed on *that*
+  value, and a revocation moves the generation of the value the store answers
+  with. Two different keys — a map against an id, a UUID against its text — and
+  the session born at registration compares 0 against 0 for ever: **no revocation
+  could ever end it**, SPEC §10 defeated with no symptom. So the store is asked
+  once more, here and only here, and a hook whose answer the store does not give
+  back is refused by name. One read at registration buys a revocation that works;
+  an ordinary sign-in never pays it. The challenge is already spent, so a refusal
+  fails closed."
   [{:keys [store clock normalise on-unknown] :as ceremony} token]
   (when (token/well-formed? token)
     (when-let [row (store/take-challenge! store token)]
@@ -206,7 +206,18 @@
         (let [identifier (:ab/identifier row)]
           (if-some [subject (subject-of ceremony identifier)]
             subject
-            (when on-unknown (on-unknown (normalise identifier)))))))))
+            (when on-unknown
+              (let [canonical (normalise identifier)]
+                (when-some [minted (on-unknown canonical)]
+                  (when-not (= minted (store/subject-for store canonical))
+                    ;; Neither the identifier, which is a person's address, nor either
+                    ;; subject: what a host logs from an exception's data is its own.
+                    (throw (ex-info (str "auth-base: :on-unknown returned a subject that subject-for does"
+                                         " not answer for the same identifier, so a session established"
+                                         " with it could never be revoked (SPEC §10): return what the"
+                                         " store will answer from now on")
+                                    {:config-key [:on-unknown]})))
+                  minted)))))))))
 
 (defn generation
   "The subject's current revocation generation, to be carried by the session
