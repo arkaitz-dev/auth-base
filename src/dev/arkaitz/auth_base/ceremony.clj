@@ -28,7 +28,7 @@
 (def ^:private default-ttl-ms (* 15 60 1000))
 
 (def ^:private ceremony-keys
-  #{:store :deliver! :link :ttl-ms :clock :bootstrap :normalise :on-unknown})
+  #{:store :deliver! :deliver-with-request! :link :ttl-ms :clock :bootstrap :normalise :on-unknown})
 
 (defn- fail! [message config-key value]
   (throw (ex-info (str "auth-base ceremony: " message)
@@ -75,7 +75,12 @@
   malformed link discovered on the first login is a defect found by a user.
 
     :store      an implementation of `store/Store` (required)
-    :deliver!   (fn [identifier link]) — gets it to the human (required)
+    :deliver!   (fn [identifier link]) — gets it to the human (required, or the next)
+    :deliver-with-request!
+                (fn [identifier link request]) — the same, with the request that asked
+                for the link, so the message can speak its language (`:wb/locale`,
+                `:wb/tr` under web-base). Exactly one of the two; `request` is nil
+                when `issue!` is called outside a request
     :link       {:base-url \"https://host\" :redeem-path \"/entrar\"} (required)
     :ttl-ms     how long a challenge lives (default 15 minutes)
     :clock      (fn []) → epoch milliseconds (default the system clock)
@@ -85,7 +90,7 @@
                 redemption by someone it has no record of. Absent, there is no
                 such answer and the redemption fails, which is what every host
                 before the first one that asked for this key wanted."
-  [{:keys [store deliver! link ttl-ms clock bootstrap normalise on-unknown] :as config}]
+  [{:keys [store deliver! deliver-with-request! link ttl-ms clock bootstrap normalise on-unknown] :as config}]
   ;; A key nobody reads is worse than a key nobody wrote: it is configuration
   ;; the host believes is in force. `:rate-limit` belongs to the handlers, and
   ;; passing it here silently bought nothing at all until this refused it.
@@ -95,8 +100,15 @@
            (vec (sort unknown)) nil))
   (when-not (satisfies? store/Store store)
     (fail! ":store must implement dev.arkaitz.auth-base.store/Store" [:store] (type store)))
-  (when-not (ifn? deliver!)
-    (fail! ":deliver! must be a function of [identifier link]" [:deliver!] deliver!))
+  (when (and (some? deliver!) (some? deliver-with-request!))
+    (fail! "give :deliver! or :deliver-with-request!, not both — which one delivers would be a guess"
+           [:deliver-with-request!] nil))
+  (if (some? deliver-with-request!)
+    (when-not (ifn? deliver-with-request!)
+      (fail! ":deliver-with-request! must be a function of [identifier link request]"
+             [:deliver-with-request!] deliver-with-request!))
+    (when-not (ifn? deliver!)
+      (fail! ":deliver! must be a function of [identifier link]" [:deliver!] deliver!)))
   (check-link! link)
   (when-not (or (nil? ttl-ms) (pos-int? ttl-ms))
     (fail! ":ttl-ms must be a positive number of milliseconds" [:ttl-ms] ttl-ms))
@@ -110,7 +122,7 @@
     (fail! ":on-unknown must be a function of one identifier" [:on-unknown] on-unknown))
   (let [normalise (or normalise normalise-default)]
     {:store      store
-     :deliver!   deliver!
+     :deliver!   (or deliver-with-request! (fn [identifier link _request] (deliver! identifier link)))
      :link       link
      :ttl-ms     (or ttl-ms default-ttl-ms)
      :clock      (or clock #(System/currentTimeMillis))
@@ -137,8 +149,12 @@
   value that distinguished a known address from an unknown one would put the
   enumeration back one layer up, in the handler that reads it. **A non-string
   identifier is refused**, which is a different question from whether an address
-  is known and asks nothing of the store — see the comment on the check."
-  [{:keys [store deliver! link ttl-ms clock normalise]} identifier]
+  is known and asks nothing of the store — see the comment on the check.
+
+  `request`, when given, reaches a `:deliver-with-request!`; the handlers pass the one
+  that asked for the link."
+  ([ceremony identifier] (issue! ceremony identifier nil))
+  ([{:keys [store deliver! link ttl-ms clock normalise]} identifier request]
   ;; Refused before anything is minted, stored or delivered (decided with the
   ;; user 2026-09-22, when `:on-unknown` first made this value reach a host
   ;; function whose job is to create accounts). The three shapes a real form
@@ -159,7 +175,7 @@
         token      (token/mint)]
     (store/put-challenge! store token identifier (instant/later (clock) ttl-ms))
     (try
-      (deliver! identifier (link-for link token))
+      (deliver! identifier (link-for link token) request)
       ;; SPEC §8: it must not tell the caller whether the address was known —
       ;; and a thrown delivery is a fact about transport, not about the
       ;; address — so it stops here and goes where an operator will see it:
@@ -168,7 +184,7 @@
       ;; Error is not a delivery failing and is not caught.
       (catch Exception e
         (log/warn e (str "auth-base: delivery failed for " (domain-of identifier)))))
-    nil))
+    nil)))
 
 (defn subject-of
   "The subject behind an identifier: the store's record, or — **only when there

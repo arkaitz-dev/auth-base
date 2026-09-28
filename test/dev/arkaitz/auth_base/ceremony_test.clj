@@ -24,7 +24,7 @@
   "A ceremony over a recording store, with the clock, the log and the
   deliveries the test reads. Non-default values throughout, so a handler or a
   ceremony that ignored its configuration could not coincide with the test."
-  [{:keys [subjects bootstrap forbid deliver! ttl-ms normalise on-unknown registers]}]
+  [{:keys [subjects bootstrap forbid deliver! deliver-with-request! ttl-ms normalise on-unknown registers]}]
   (let [clock      (atom 1000)
         log        (atom [])
         deliveries (atom [])
@@ -36,7 +36,9 @@
      :inner      inner
      :ceremony   (ceremony/ceremony
                   (cond-> {:store     recorder
-                           :deliver!  (or deliver! (fn [id link] (swap! deliveries conj [id link])))
+                           :deliver!  (when-not deliver-with-request!
+                                        (or deliver! (fn [id link] (swap! deliveries conj [id link]))))
+                           :deliver-with-request! deliver-with-request!
                            :link      {:base-url "https://x.test" :redeem-path "/entrar"}
                            :ttl-ms    (or ttl-ms 500)
                            :clock     #(deref clock)
@@ -731,3 +733,58 @@
     (is (= (dec Long/MAX_VALUE) (nth (first @log) 3))
         (str "a ttl that still fits is summed exactly — 1000 + (MAX - 1001) is MAX - 1 — so the"
              " ceiling is reached only by a sum that would overflow"))))
+
+;; --- :deliver-with-request! ---------------------------------------------------------
+
+(deftest issue!-hands-deliver-with-request-its-request--and-nil-when-called-without-one
+  (let [deliveries (atom [])
+        {:keys [ceremony log]} (fixture {:subjects {"ada@x.test" {:id 1}}
+                                         :deliver-with-request! (fn [& args] (swap! deliveries conj (vec args)))})
+        marker {:marker 1}]
+    (lt/with-log
+      (ceremony/issue! ceremony "ada@x.test")
+      (ceremony/issue! ceremony "ada@x.test" marker)
+      (is (= [] (lt/the-log)) "nothing was logged"))
+    (let [[[id1 link1 r1] [id2 _ r2]] @deliveries]
+      (is (= [2 "ada@x.test" "ada@x.test"] [(count @deliveries) id1 id2]) "two deliveries, each with the identifier")
+      (is (str/starts-with? link1 "https://x.test/entrar/") "and the link")
+      (is (= [3 3] (mapv count @deliveries)) "each delivery got three arguments")
+      (is (nil? r1) "issue! with no request hands nil as the third")
+      (is (identical? marker r2) "and with one, that very value"))
+    (is (= [:put-challenge! :put-challenge!] (support/calls log)) "the store was asked for nothing else")))
+
+(deftest a-two-arity-deliver!-is-called-with-two-arguments-and-nothing-is-logged
+  (let [deliveries (atom [])
+        {:keys [ceremony]} (fixture {:subjects {"ada@x.test" {:id 1}}
+                                     :deliver! (fn [id link] (swap! deliveries conj [id link]))})]
+    (lt/with-log
+      (ceremony/issue! ceremony "ada@x.test" {:any :request})
+      (is (= [] (mapv (juxt :level :message (comp type :throwable)) (lt/the-log)))
+          "no WARN: a third argument passed to it would be an ArityException swallowed as a delivery failure"))
+    (is (= ["ada@x.test"] (mapv first @deliveries))
+        "delivered once — a function of two arguments, which a third would have made throw")))
+
+(deftest deliver!-and-deliver-with-request!-are-exclusive--and-each-is-checked
+  (let [message (fn [config] (try (ceremony/ceremony config) nil (catch ExceptionInfo e (ex-message e))))]
+    (is (= [[:deliver-with-request!] nil] (refused (assoc valid :deliver-with-request! (fn [_ _ _]))))
+        "both is refused, naming the new key")
+    (is (re-find #"not both" (str (message (assoc valid :deliver-with-request! (fn [_ _ _])))))
+        "as a choice to make, not as an unknown option")
+    (is (= [[:deliver-with-request!] 5] (refused (-> valid (dissoc :deliver!) (assoc :deliver-with-request! 5)))))
+    (is (= [[:deliver!] nil] (refused (dissoc valid :deliver!))) "neither is the old refusal")
+    (is (= [[:deliver!] nil] (refused (assoc valid :deliver! nil :deliver-with-request! nil))))
+    (is (map? (ceremony/ceremony (-> valid (dissoc :deliver!) (assoc :deliver-with-request! (fn [_ _ _])))))
+        "the new key alone builds, so the refusal of both is not an unknown-option refusal")
+    (is (map? (ceremony/ceremony (assoc valid :deliver-with-request! nil))) "an explicit nil is the absent key")))
+
+(deftest a-deliver-with-request-that-throws-is-logged-by-domain--and-an-error-propagates
+  (let [thrown (ex-info "boom" {})
+        {:keys [ceremony]} (fixture {:subjects {"ada@x.test" {:id 1}} :deliver-with-request! (fn [_ _ _] (throw thrown))})]
+    (lt/with-log
+      (is (nil? (ceremony/issue! ceremony "ada@x.test" {})) "the caller is told nothing")
+      (is (= [[:warn thrown "auth-base: delivery failed for an address at x.test"]]
+             (mapv (juxt :level :throwable :message) (lt/the-log))))))
+  (let [thrown (AssertionError. "boom")
+        {:keys [ceremony]} (fixture {:subjects {"ada@x.test" {:id 1}} :deliver-with-request! (fn [_ _ _] (throw thrown))})]
+    (is (identical? thrown (try (ceremony/issue! ceremony "ada@x.test" {}) ::returned (catch Throwable t t)))
+        "an Error still reaches the caller")))

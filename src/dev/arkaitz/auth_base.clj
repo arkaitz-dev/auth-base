@@ -57,7 +57,8 @@
 (def issue!
   "`(issue! ceremony identifier)` → nil, always, whatever the address is. The
   identifier must be a string; anything else is refused, which is a fact about
-  the type and never about whether the address is known."
+  the type and never about whether the address is known. `(issue! ceremony
+  identifier request)` hands `request` to a `:deliver-with-request!`."
   ceremony/issue!)
 
 (def redeem!

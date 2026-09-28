@@ -17,18 +17,30 @@
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.handlers :as handlers]
             [dev.arkaitz.auth-base.store :as store]
+            [dev.arkaitz.auth-base.session :as session]
             [dev.arkaitz.auth-base.support :as support]
+            [clojure.tools.logging.test :as lt]
+            [dev.arkaitz.web-base :as wb]
+            [dev.arkaitz.web-base.response :as wb-response]
+            [dev.arkaitz.web-base.security :as security]
+            [dev.arkaitz.web-base.testing :as wbt]
+            [ring.middleware.session :as ring-session]
+            [ring.middleware.session.memory :as memory]
+            [ring.middleware.session.store :as ring-store]
             [ring.mock.request :as mock])
   (:import [clojure.lang ExceptionInfo]))
 
 (defn- fixture
-  [{:keys [subjects forbid rate-limit views normalise]}]
+  [{:keys [subjects forbid rate-limit views normalise keep-session with-request?]}]
   (let [clock      (atom 1000)
         log        (atom [])
         deliveries (atom [])
         inner      (store/in-memory {:subjects subjects :clock #(deref clock)})
         ceremony   (ceremony/ceremony {:store    (support/recording inner log (or forbid #{}))
-                                       :deliver! (fn [id link] (swap! deliveries conj [id link]))
+                                       (if with-request? :deliver-with-request! :deliver!)
+                                       (if with-request?
+                                         (fn [id link request] (swap! deliveries conj [id link request]))
+                                         (fn [id link] (swap! deliveries conj [id link])))
                                        :link     {:base-url "https://x.test" :redeem-path "/entrar"}
                                        :ttl-ms   500
                                        :clock    #(deref clock)
@@ -46,7 +58,8 @@
                                        :logout-path  "/out"
                                        :after-login  "/home"
                                        :after-logout "/bye"}
-                                rate-limit (assoc :rate-limit rate-limit))))))
+                                rate-limit   (assoc :rate-limit rate-limit)
+                                keep-session (assoc :keep-session keep-session))))))
 
 (defn- token-of [link] (last (str/split link #"/")))
 
@@ -474,8 +487,121 @@
     (is (= ["/login" "/entrar/:token" "/out"] (mapv first routes))
         "the paths are the host's own, and the redemption path comes from the ceremony's link")
     (is (= [[:get :post] [:get] [:post]]
-           (mapv (comp vec sort keys second) routes))
+           (mapv #(vec (sort (filter #{:get :post :put :patch :delete} (keys (second %))))) routes))
         "with the methods each one answers")
+    (is (= [nil :template nil] (mapv #(:wb/log-path (second %)) routes))
+        "and the redemption, whose last segment is the token, asks web-base to log its template, on the route's own data")
+    (is (= [#{:get :post} #{:wb/log-path :get} #{:post}] (mapv #(set (keys (second %))) routes))
+        "nothing else rides in the route data")
     (testing "it really is data, so a host with no reitit can read it"
       (is (every? vector? routes))
-      (is (every? #(fn? (get-in (second %) [(first (keys (second %))) :handler])) routes)))))
+      (is (every? (fn [[_ data]] (every? #(fn? (get-in data [% :handler])) (filter #{:get :post} (keys data)))) routes)))))
+
+;; --- :keep-session ------------------------------------------------------------------
+
+(defn- session-cookie-of [response]
+  (get (wbt/cookies response) "ring-session"))
+
+(deftest a-redemption-keeps-only-the-named-keys-of-the-session-it-arrived-with--rotated-under-rings-own-middleware
+  (let [planted {:locale "eu" :return-to "/x" :trap true :ring.middleware.anti-forgery/anti-forgery-token "T0"}
+        signed  (fn [opts cookie]
+                  (let [f        (fixture (merge {:subjects {"ada@x.test" {:id 1}}} opts))
+                        token    (issued! f "ada@x.test")
+                        sessions (atom {"planted" planted})
+                        store    (memory/memory-store sessions)
+                        app      (ring-session/wrap-session (:redeem f) {:store store})
+                        request  (cond-> (mock/request :get (str "/entrar/" token))
+                                   cookie (mock/header "Cookie" (str "ring-session=" cookie)))
+                        response (app request)
+                        fresh    (session-cookie-of response)]
+                    {:response response :store store :fresh fresh :f f :token token}))]
+    (let [{:keys [response store fresh]} (signed {:keep-session #{:locale :return-to}} "planted")]
+      (is (= [303 "/home"] [(:status response) (get-in response [:headers "Location"])])
+          "precondition: the redemption succeeded")
+      (is (nil? (ring-store/read-session store "planted"))
+          "the planted id is gone: the defence against fixation survives :keep-session")
+      (is (and (some? fresh) (not= "planted" fresh)) (str "the browser holds another id: " (pr-str fresh)))
+      (is (= {:locale "eu" :return-to "/x" :ab/subject {:id 1} :ab/generation 0} (ring-store/read-session store fresh))
+          "the named keys survived; the marker and the pre-login CSRF token did not; the subject is the redemption's"))
+    (let [{:keys [store fresh]} (signed {} "planted")]
+      (is (= {:ab/subject {:id 1} :ab/generation 0} (ring-store/read-session store fresh))
+          "control: without the option nothing of the old session survives, as before it existed"))
+    (let [{:keys [store fresh]} (signed {:keep-session #{:locale}} nil)]
+      (is (= {:ab/subject {:id 1} :ab/generation 0} (ring-store/read-session store fresh))
+          "an arrival with no session and something to keep still signs in, keeping nothing"))
+    (let [{:keys [f token]} (signed {:keep-session #{:locale}} nil)
+          spent-request (-> (mock/request :get (str "/entrar/" token)) (assoc :session {:locale "eu"}))]
+      (is (false? (contains? ((:redeem f) spent-request) :session))
+          "a spent redemption with :keep-session configured touches no session, not even to narrow it"))))
+
+(deftest handlers-refuse-a-malformed-keep-session-naming-the-key
+  (let [{:keys [ceremony]} (fixture {})
+        attempt (fn [ks] (try (handlers/handlers ceremony {:view (fn [_ _]) :login-path "/login" :keep-session ks})
+                              (catch ExceptionInfo e [(:config-key (ex-data e)) (:value (ex-data e)) (ex-message e)])))
+        message "auth-base handlers: :keep-session must be a set of keywords, none of them under :ab/ nor the CSRF token"]
+    (doseq [bad [[:locale] #{"locale"} #{:locale :ab/subject} #{:ab/generation} :locale
+                 #{:locale :ring.middleware.anti-forgery/anti-forgery-token}]]
+      (is (= [[:keep-session] bad message] (attempt bad)) (str (pr-str bad) " is refused, naming the key")))
+    ;; No request could show the :ab/ guard at work today — establish writes both :ab/
+    ;; keys over whatever was kept — so it is pinned here, at construction.
+    (doseq [good [#{} #{:locale} #{:ab} nil]]
+      (is (map? (attempt good)) (str (pr-str good) " is accepted")))))
+
+(deftest under-web-base-the-kept-key-survives-the-login-and-the-pre-login-csrf-token-does-not
+  (let [deliveries (atom [])
+        ceremony   (ceremony/ceremony {:store    (store/in-memory {:subjects {"ada@x.test" {:id 1}}})
+                                       :deliver! (fn [id link] (swap! deliveries conj [id link]))
+                                       :link     {:base-url "https://x.test" :redeem-path "/entrar"}})
+        sessions   (atom {})
+        app        (wb/handler
+                    {:routes     (into (handlers/routes ceremony {:view         (fn [r _] [:form (security/csrf-field r)])
+                                                                  :login-path   "/login"
+                                                                  :after-login  "/home"
+                                                                  :keep-session #{:locale}})
+                                       [["/home" {:get {:handler (fn [r] (wb-response/ok [:p (security/csrf-field r)]))}}]
+                                        ["/lang" {:post {:handler (fn [r] (assoc (wb-response/see-other "/login")
+                                                                                 :session (assoc (:session r) :locale "eu" :planted true)))}}]])
+                     :subject-fn (session/subject-fn ceremony)
+                     :session    {:store (memory/memory-store sessions)}})
+        post       (fn [path sid token params]
+                     (app (-> (mock/request :post path (assoc params "__anti-forgery-token" token))
+                              (mock/header "Cookie" (str "ring-session=" sid)))))
+        page0      (app (mock/request :get "/login"))
+        t0         (wbt/csrf-token page0)
+        s0         (session-cookie-of page0)]
+    (is (and (some? t0) (some? s0)) "witness: the login page gave a session and a token")
+    (is (= 303 (:status (post "/lang" s0 t0 {}))) "control: the pre-login token works before the login")
+    (is (= {:ring.middleware.anti-forgery/anti-forgery-token t0 :locale "eu" :planted true} (get @sessions s0))
+        "precondition: the anonymous session holds the token, the language and a marker")
+    (is (= 303 (:status (post "/login" s0 t0 {"identifier" "ada@x.test"}))) "the link was asked for")
+    (let [link   (second (last @deliveries))
+          opened (app (-> (mock/request :get (subs link (count "https://x.test")))
+                          (mock/header "Cookie" (str "ring-session=" s0))))
+          s1     (session-cookie-of opened)]
+      (is (= "/home" (get-in opened [:headers "Location"])) "witness: the redemption signed in")
+      (is (and (some? s1) (not= s0 s1)) "and rotated the id")
+      (is (nil? (get @sessions s0)) "the old session is gone")
+      (is (= {:locale "eu" :ab/subject {:id 1} :ab/generation 0} (get @sessions s1))
+          "the kept key crossed the rotation; the marker did not (auth-base copied only what it was told), nor the token (web-base minted none for a redirect)")
+      (is (= 403 (:status (post "/lang" s1 t0 {}))) "the pre-login token does not work in the signed-in session")
+      (let [home (app (-> (mock/request :get "/home") (mock/header "Cookie" (str "ring-session=" s1))))
+            t1   (wbt/csrf-token home)]
+        (is (and (some? t1) (not= t0 t1)) "the first page after the login carries a token of its own")
+        (is (= 303 (:status (post "/lang" s1 t1 {}))) "control: which works, so the 403 above is the rotation")))))
+
+;; --- :deliver-with-request! ---------------------------------------------------------
+
+(deftest the-issue-handler-hands-deliver-with-request-the-very-request-that-asked
+  (let [{:keys [issue deliveries log]} (fixture {:subjects {"ada@x.test" {:id 1}} :with-request? true})
+        request (assoc (mock/request :post "/login")
+                       :form-params {"identifier" "ada@x.test"} :remote-addr "10.0.0.1" :wb/locale :eu)]
+    (lt/with-log
+      (is (= 303 (:status (issue request))) "the link was asked for")
+      (is (= [] (mapv (juxt :level :message) (lt/the-log)))
+          "and nothing was logged: an arity mismatch in the delivery would be swallowed as a WARN and show nowhere else"))
+    (is (= 1 (count @deliveries)) "one delivery")
+    (let [[identifier link received] (first @deliveries)]
+      (is (= :eu (:wb/locale received)) "what the base put on the request reached the delivery")
+      (is (identical? request received) "the request itself, not a copy")
+      (is (= ["ada@x.test" true] [identifier (str/starts-with? link "https://x.test/entrar/")]) "with the identifier and the link"))
+    (is (= [:put-challenge!] (support/calls log)) "and the request made issue! ask the store nothing more")))

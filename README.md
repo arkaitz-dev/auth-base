@@ -238,6 +238,7 @@ its own router — or under none, as `harness/` does with a `case` over the URI.
 
 ```clojure
 (auth/issue!  ceremony identifier)   ; => nil, always, whatever the address is
+(auth/issue!  ceremony identifier request)   ; the same, handing a :deliver-with-request! its request
 (auth/redeem! ceremony token)        ; => a subject, or nil
 (auth/revoke! ceremony subject)      ; => nil, and every session of theirs dies
 ```
@@ -411,13 +412,14 @@ something to name when there is no local identity at all.
 | key | meaning |
 |---|---|
 | `:store` | an implementation of the port (required) |
-| `:deliver!` | `(fn [identifier link])` (required); in development, `dev.arkaitz.auth-base.console/deliver!` prints the link — never in production, where it would put a credential in the logs |
+| `:deliver!` | `(fn [identifier link])` (required, or the next); in development, `dev.arkaitz.auth-base.console/deliver!` prints the link — never in production, where it would put a credential in the logs |
+| `:deliver-with-request!` | `(fn [identifier link request])`, in place of `:deliver!` (since 0.7.0): the request that asked for the link, so the message speaks its language (`:wb/locale`, `:wb/tr`). Take what you need from it; do not log or keep it, since it carries the cookie and the session |
 | `:link` | `{:base-url "https://host" :redeem-path "/entrar"}` (required) |
 | `:ttl-ms` | how long a challenge lives (default 15 minutes) |
 | `:clock` | `(fn [])` → epoch milliseconds (default the system clock) |
 | `:bootstrap` | identifiers that hold no record and may still enter |
 | `:normalise` | `(fn [identifier])` → canonical form (default trim + lower-case); `(auth/normalise ceremony id)` applies it, for an address the host stores itself |
-| `:on-unknown` | `(fn [identifier])` → a subject, or nil. How you answer a redemption by somebody you have no record of — `#(auth-jdbc/register! ds %)` with the JDBC store. Absent, there is no answer and the redemption fails: nobody new can ever sign in |
+| `:on-unknown` | `(fn [identifier])` → a subject, or nil. How you answer a redemption by somebody you have no record of — `#(auth-jdbc/register! ds %)` with the JDBC store. Absent, there is no answer and the redemption fails: nobody new can ever sign in. Since 0.4.0 its answer must be `=` to what `subject-for` then answers, or the redemption is refused |
 
 `auth/handlers` and `auth/routes` — likewise:
 
@@ -429,7 +431,8 @@ something to name when there is no local identity at all.
 | `:after-login` | where a redeemed link lands (default `/`) |
 | `:after-logout` | where a logout lands (default `:login-path`) |
 | `:field` | the form field holding the identifier (default `identifier`) |
-| `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean)`, or absent — see below for what a refusal answers |
+| `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean)`, or absent — see below for what a refusal answers; the map also takes `:max-keys`, how many sources it tracks at once (10000), dropping the oldest window when full |
+| `:keep-session` | a set of keys of the session the redemption arrives with that the signed-in session keeps (since 0.7.0) — `#{:locale}` for a language chosen before signing in. The id still rotates and everything else is dropped; `:ab/` keys and the CSRF token are refused. What is kept was written before anyone signed in, possibly by whoever planted the session: check it where you use it, and keep nothing that grants authority |
 
 The rate limit is keyed by `:remote-addr` — the **source**, never the address. Counting
 per address would answer differently for one somebody had just asked about, and would

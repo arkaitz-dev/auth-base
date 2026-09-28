@@ -41,7 +41,7 @@
 (def ^:private default-field "identifier")
 
 (def ^:private handler-keys
-  #{:view :login-path :logout-path :after-login :after-logout :field :rate-limit})
+  #{:view :login-path :logout-path :after-login :after-logout :field :rate-limit :keep-session})
 
 (defn- fail! [message config-key value]
   (throw (ex-info (str "auth-base handlers: " message)
@@ -138,6 +138,13 @@
     :after-login   where a redeemed link lands (default \"/\")
     :after-logout  where a logout lands (default `:login-path`)
     :field         the form field holding the identifier (default \"identifier\")
+    :keep-session  a set of keys of the session the redemption arrives with that the
+                   signed-in session keeps — a language chosen before signing in, a
+                   page to return to. Everything else is dropped with the old session;
+                   this module's own `:ab/` keys and the CSRF token are refused. What is
+                   kept was written before anyone signed in, possibly by whoever planted
+                   the session: check it where it is used, and keep nothing that grants
+                   authority
     :rate-limit    `{:limit n :window-ms n}`, or a `(fn [key] boolean)`, or
                    absent for no limit. The key is the request's `:remote-addr`,
                    which is a proxy's address unless the host is told to trust
@@ -154,7 +161,7 @@
   the body — `ring.middleware.params/wrap-params`, which web-base already
   applies. CSRF is the host's too, for the same reason: web-base has it, and a
   bare Ring host must bring it."
-  [ceremony {:keys [view login-path logout-path after-login after-logout field rate-limit]
+  [ceremony {:keys [view login-path logout-path after-login after-logout field rate-limit keep-session]
              :as   opts}]
   (when-let [unknown (not-empty (remove handler-keys (keys opts)))]
     (fail! (str "unknown option" (when (next unknown) "s") ": " (pr-str (vec (sort unknown)))
@@ -167,6 +174,16 @@
   (when-not (and (string? login-path) (str/starts-with? login-path "/")
                  (not (re-find #"[?#]" login-path)))
     (fail! ":login-path must be a path starting with \"/\", with no query or fragment" [:login-path] login-path))
+  ;; A key under :ab/ carried over would be a subject or a generation the session was
+  ;; not established with: the redemption decides those, never the session before it.
+  ;; ring-anti-forgery's token, carried over, would hand whoever planted the session
+  ;; before the login the signed-in session's CSRF token — what rotating it prevents.
+  (when-not (or (nil? keep-session)
+                (and (set? keep-session) (every? keyword? keep-session)
+                     (not-any? #(= "ab" (namespace %)) keep-session)
+                     (not (contains? keep-session :ring.middleware.anti-forgery/anti-forgery-token))))
+    (fail! ":keep-session must be a set of keywords, none of them under :ab/ nor the CSRF token"
+           [:keep-session] keep-session))
   (let [logout-path  (or logout-path "/logout")
         after-login  (or after-login "/")
         after-logout (or after-logout login-path)
@@ -197,7 +214,7 @@
              true           no-store)
          (let [identifier (get (:form-params request) field)]
            (if (and (submitted? identifier) (fits? ceremony identifier))
-             (do (ceremony/issue! ceremony identifier)
+             (do (ceremony/issue! ceremony identifier request)
                  sent)
              ;; Nobody typed anything, the field was never there — a POST made
              ;; by hand, or a `:field` that does not match the form — or its
@@ -215,7 +232,8 @@
                               (ceremony/redeem! ceremony))]
          (-> (if (some? subject)
                (session/establish ceremony
-                                  (response/redirect after-login :see-other)
+                                  (cond-> (response/redirect after-login :see-other)
+                                    (seq keep-session) (assoc :session (select-keys (:session request) keep-session)))
                                   subject)
                spent)
              (response/header "Referrer-Policy" "no-referrer")
@@ -232,7 +250,9 @@
   [ceremony opts]
   (let [{:keys [paths form issue redeem logout]} (handlers ceremony opts)]
     [[(:login paths)  {:get {:handler form} :post {:handler issue}}]
-     [(:redeem paths) {:get {:handler redeem}}]
+     ;; The token is the path's last segment: web-base 0.9.0 and later log this route by
+     ;; its template instead. An earlier web-base, or any other reitit host, ignores it.
+     [(:redeem paths) {:wb/log-path :template :get {:handler redeem}}]
      [(:logout paths) {:post {:handler logout}}]]))
 
 (defn unauthorized

@@ -260,6 +260,14 @@ catches `Exception`: an `Error` is not a delivery failing, and it propagates as 
 through the other two libraries of this set. A host whose mail code asserts now sees
 its assertion rather than a page saying the link is on its way.
 
+**Amended 2026-09-28 (0.7.0).** A delivery could not speak the person's language: it
+was handed the identifier and the link, and nothing of the request that asked. A host
+may give `:deliver-with-request!` instead of `:deliver!` — `(fn [identifier link
+request])`, exactly one of the two — and the handlers pass it the request that asked,
+where web-base has put `:wb/locale` and `:wb/tr`. `issue!` called outside a request
+hands it nil. The rule above holds unchanged for it, and the request is the host's to
+read and never to log or keep.
+
 ## 9 · Establishing the session
 
 The login handler answers with a response carrying `:session`, and that session map
@@ -279,6 +287,15 @@ at the same place.
 The module must set it **on the same act** that sets the session. Marking first and
 assoc'ing later loses the mark silently, which is a failure with no symptom — the
 reason web-base's own `rotate` takes two arguments.
+
+**Amended 2026-09-28 (0.7.0).** A language chosen before signing in was lost at the
+redemption, whose session starts from nothing. The handlers take `:keep-session`, a set
+of keys the new session copies from the one the redemption arrived with — the id still
+rotates, and everything else is dropped. This module's own `:ab/` keys and ring
+anti-forgery's token are refused: the first are the redemption's to decide, and the
+second, carried over, would give whoever planted the session the signed-in session's
+CSRF token. What is kept was written before anyone signed in, possibly by that same
+person: the host checks it where it uses it, and keeps nothing that grants authority.
 
 ## 10 · Revocation
 
