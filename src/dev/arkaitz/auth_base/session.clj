@@ -72,13 +72,22 @@
   of the ceremony take the ceremony first instead; the two conventions
   disagree and Ring's wins inside a stack, because getting it wrong there
   costs nothing visible — a Clojure map is callable, so a swapped pair returns
-  nil from every request rather than throwing."
+  nil from every request rather than throwing.
+
+  A request whose `:wb/subject` is present and not nil — web-base puts there what its
+  `:subject-fn` answered, before any route runs — is taken as live without asking the
+  store again, so a signed-in request reads the generation once and not twice. Nil
+  proves nothing — web-base answers nil for every request of a host with no
+  `:subject-fn` — so then, and without the key, `subject-fn` is asked. Either way the
+  question is the one the request arrived with: a revocation that lands while the
+  handler runs deletes the session at the next request."
   [handler ceremony]
   (let [subject (subject-fn ceremony)]
     (fn [request]
-      (let [response (handler request)]
-        (if (and (contains? (:session request) :ab/subject)
-                 (nil? (subject request))
-                 (not (contains? response :session)))
+      (let [revoked? (and (contains? (:session request) :ab/subject)
+                          (nil? (:wb/subject request))
+                          (nil? (subject request)))
+            response (handler request)]
+        (if (and revoked? (not (contains? response :session)))
           (assoc response :session nil)
           response)))))

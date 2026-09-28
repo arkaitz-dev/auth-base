@@ -44,6 +44,12 @@ passes its function to web-base, or to any other Ring application, or to none.
   the same store by hand, and a store whose single use is proved once beats three that
   were each proved by their author.
 - **Not a web framework.** It does not know web-base exists.
+  Amended 2026-09-28: one function reads a key web-base documents. `wrap-revoked` takes
+  a request's `:wb/subject` that is not nil as the answer web-base's `:subject-fn`
+  already gave, instead of reading the generation a second time — the same class as the
+  MDC key of §3: a documented name, read when present, harmless when absent, since the
+  store is then asked as before. If web-base renamed it, every request would go back to
+  two reads, correct and slower; nothing would break.
 
 ## 3 · The rule that governs everything here
 
@@ -293,6 +299,16 @@ The store keeps a generation number per subject. The session carries the generat
 was born with. A middleware compares them on each request and drops a session whose
 generation is stale. `revoke!` increments the number, and every session of that subject
 dies at its next request.
+
+Amended 2026-09-28, with the user: `wrap-revoked` judges a request as it arrived, before
+its handler runs, so a revocation made inside the handler drops the session at the next
+request, not in that response. Under web-base it takes a `:wb/subject` that is not nil
+as live, which is what web-base's `:subject-fn` has just computed; a nil one proves
+nothing — web-base answers nil for every request of a host with no `:subject-fn` — so
+the store is asked. The host's side of that: a `:subject-fn` composed over this
+module's answers nil when there is no live subject; any that answers something for a
+revoked session — a guest, a subject read straight from the session — leaves its row to
+expire rather than go.
 
 This works with **every** store, including the signed cookie, which is what makes it
 the contract: revocation without infrastructure, the same way the demo proves

@@ -290,7 +290,18 @@ session layer:
 After `revoke!`, the next request through those routes deletes the session (the row,
 with a server-side store). Routes outside the router — the default 404, and web-base's
 `:sessionless` routes — are not covered; a revoked session there still yields no
-subject, and its row goes when it expires.
+subject, and its row goes when it expires. Nor is a gated route: web-base's gate
+runs before route middleware and answers a revoked session with its refusal first, so
+the row goes at the next request through a route with no gate that carries the
+middleware — the login page, when it is mounted under it.
+
+Under web-base a live session costs nothing more: a `:wb/subject` that is not nil is
+taken as live, so the generation is read once per request, not twice; a nil one, or
+none, asks the store as before. It judges the request as it arrived, so a revocation
+made while the handler runs deletes the session at the next request. A `:subject-fn`
+composed over `auth/subject-fn` must answer nil when there is no live subject: any
+`:subject-fn` that answers something for a revoked session — a guest, a subject read
+straight from the session — leaves its row to expire rather than go.
 
 ## The store port
 
