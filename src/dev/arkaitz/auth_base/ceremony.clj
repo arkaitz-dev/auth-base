@@ -21,7 +21,8 @@
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [dev.arkaitz.auth-base.store :as store]
-            [dev.arkaitz.auth-base.token :as token]))
+            [dev.arkaitz.auth-base.token :as token])
+  (:import [java.util Locale]))
 
 (def ^:private default-ttl-ms (* 15 60 1000))
 
@@ -49,9 +50,14 @@
 
 (defn- normalise-default
   "Addresses arrive as people type them. Without this, `Ada@example.test` and
-  `ada@example.test` are two accounts and one of them can never log in."
+  `ada@example.test` are two accounts and one of them can never log in.
+
+  Lower-cased under `Locale/ROOT`, never the JVM's default (corrected 2026-09-28): under
+  a Turkish or Azeri default `str/lower-case` turns \"I\" into a dotless \"ı\", so
+  `ADA@IX.TEST` became `ada@ıx.test` — another account on that JVM, and a link sent to a
+  domain that does not exist."
   [identifier]
-  (some-> identifier str str/trim str/lower-case))
+  (some-> identifier str str/trim (.toLowerCase Locale/ROOT)))
 
 (defn normalise
   "`identifier` as this ceremony spells it — the host's `:normalise`, or trim and

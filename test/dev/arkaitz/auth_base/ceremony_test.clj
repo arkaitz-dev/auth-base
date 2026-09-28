@@ -17,7 +17,8 @@
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.support :as support])
-  (:import [clojure.lang ExceptionInfo]))
+  (:import [clojure.lang ExceptionInfo]
+           [java.util Locale]))
 
 (defn- fixture
   "A ceremony over a recording store, with the clock, the log and the
@@ -203,6 +204,19 @@
         "control: an ordinary string still issues, so the refusals above are about the type")
     (is (= [:put-challenge!] (support/calls log))
         "and that one did reach the store, which is what makes every empty log above mean something")))
+
+(deftest the-default-rule-lower-cases-the-same-on-every-jvm-locale
+  ;; The JVM's default locale is process-wide, so it is set and restored around the one
+  ;; call, and asserted to be doing what makes the case matter before the invariant is.
+  (let [ceremony (:ceremony (fixture {}))
+        before   (Locale/getDefault)]
+    (try
+      (Locale/setDefault (Locale. "tr" "TR"))
+      (is (= "ı" (str/lower-case "I"))
+          "precondition: under this default locale the plain lower-case of I is a dotless ı")
+      (is (= "ada@ix.test" (ceremony/normalise ceremony "  ADA@IX.TEST "))
+          "the ceremony's normal form is the same as on any other JVM: an i with its dot")
+      (finally (Locale/setDefault before)))))
 
 (deftest issue!-normalises-the-identifier-and-the-host-can-replace-the-rule
   (let [{:keys [ceremony log deliveries]} (fixture {:subjects {"ada@x.test" {:id 1}}})]
