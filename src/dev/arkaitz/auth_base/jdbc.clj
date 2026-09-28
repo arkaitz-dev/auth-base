@@ -54,7 +54,7 @@
   (when-not (instance? DataSource ds)
     (throw (ex-info (str "auth-base jdbc: takes a javax.sql.DataSource — from db-base, (:datasource db) —"
                          " not " (if (map? ds) "a map" (some-> ds class .getName)))
-                    {:datasource-type (some-> ds class .getName)})))
+                    {:datasource-type (some-> ds class .getName) :config-key [:datasource]})))
   ds)
 
 (defn check!
@@ -75,7 +75,7 @@
              (throw (ex-info (str "auth-base jdbc: check! could not read table " table " as this version does —"
                                   " the table or one of its columns is missing; copy auth-jdbc/ddl whole, one"
                                   " statement per migration or separated by --;;")
-                             {:table table}
+                             {:table table :config-key [:datasource]}
                              e)))))
     ds))
 
@@ -208,6 +208,14 @@
   "Deletes challenges whose expiry is at or before `now`, and returns how many. The
   operator's to call: an expired challenge is already unusable — the ceremony refuses
   it and consumes it on sight — so this is about disk, and a timer would be a
-  lifecycle nobody asked for."
+  lifecycle nobody asked for.
+
+  A `now` that is not a number is refused: compared with nil the predicate is never
+  true, so the call would delete nothing and answer 0 for ever, which reads exactly
+  like a table with nothing expired."
   [ds now]
-  (changed (one (datasource! ds) "DELETE FROM login_challenge WHERE expires_at <= ?" now)))
+  (let [ds (datasource! ds)]
+    (when-not (number? now)
+      (throw (ex-info "auth-base jdbc: reclaim-expired! takes now as a number of epoch milliseconds"
+                      {:now now})))
+    (changed (one ds "DELETE FROM login_challenge WHERE expires_at <= ?" now))))

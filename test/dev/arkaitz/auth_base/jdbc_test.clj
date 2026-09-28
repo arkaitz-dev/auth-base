@@ -310,7 +310,7 @@
     (on-engines (update aj/ddl i #(str/replace-first % (str col " ") (str col "_drifted ")))
                 (fn [engine ds]
                   (let [e (try (aj/check! ds) nil (catch Throwable e e))]
-                    (is (= {:table table} (ex-data e)) (str engine ": " table "." col " renamed is refused naming its table"))
+                    (is (= {:table table :config-key [:datasource]} (ex-data e)) (str engine ": " table "." col " renamed is refused naming its table"))
                     (is (str/includes? (str (ex-message e)) "copy auth-jdbc/ddl whole")
                         (str engine ": saying what to do: " (ex-message e)))
                     (is (and (instance? SQLException (ex-cause e))
@@ -320,7 +320,7 @@
     (on-engines (vec (concat (subvec aj/ddl 0 i) (subvec aj/ddl (inc i))))
                 (fn [engine ds]
                   (let [e (try (aj/check! ds) nil (catch Throwable e e))]
-                    (is (= {:table table} (ex-data e)) (str engine ": a missing " table " is named"))
+                    (is (= {:table table :config-key [:datasource]} (ex-data e)) (str engine ": a missing " table " is named"))
                     (is (instance? SQLException (ex-cause e)) (str engine ": the engine's refusal is its cause")))))))
 
 (deftest the-readme-shows-exactly-the-ddl
@@ -366,7 +366,7 @@
                [bad what type] [[{:datasource ds} "a map" "clojure.lang.PersistentArrayMap"]
                                 ["jdbc:h2:mem:x" "java.lang.String" "java.lang.String"]]]
          (is (= [(str "auth-base jdbc: takes a javax.sql.DataSource — from db-base, (:datasource db) — not " what)
-                 {:datasource-type type}]
+                 {:datasource-type type :config-key [:datasource]}]
                 (try (apply f bad args) nil (catch clojure.lang.ExceptionInfo e [(ex-message e) (ex-data e)])))
              (str engine ": " label " refuses " what " by name")))
        (is (= before (counts)) (str engine ": and nothing was touched"))
@@ -384,3 +384,21 @@
      (is (= 2 (aj/reclaim-expired! ds 200)) (str engine ": the one before and the one at the instant"))
      (is (= [["t300"]] (raw ds "SELECT token FROM login_challenge")) (str engine ": the later one stays"))
      (is (= 0 (aj/reclaim-expired! ds 200)) (str engine ": and nothing new has expired")))))
+
+(deftest reclaim-expired!-refuses-a-now-that-is-not-a-number-by-name-and-deletes-nothing
+  ;; `expires_at <= NULL` is never true, so a nil `now` deleted nothing, every time, and
+  ;; answered 0 — indistinguishable from a table with nothing expired.
+  (on-engines
+   (fn [engine ds]
+     (let [plant-three! (fn []
+                          (doseq [[t e] [["t100" 100] ["t200" 200] ["t300" 300]]]
+                            (plant! ds "INSERT INTO login_challenge (token, identifier, expires_at) VALUES (?, ?, ?)" t "x" e)))]
+       (plant-three!)
+       (doseq [[label now] [["nil" nil] ["a string" "200"] ["a keyword" :now] ["a date" (java.util.Date. 200)]]]
+         (is (= ["auth-base jdbc: reclaim-expired! takes now as a number of epoch milliseconds" {:now now}]
+                (try (aj/reclaim-expired! ds now) nil
+                     (catch clojure.lang.ExceptionInfo e [(ex-message e) (ex-data e)])))
+             (str engine ": " label " is refused, naming the value"))
+         (is (= 3 (count-of ds "login_challenge")) (str engine ": and " label " deleted nothing")))
+       (is (= 2 (aj/reclaim-expired! ds 200))
+           (str engine ": control — the same rows, with a number, are reclaimed"))))))
