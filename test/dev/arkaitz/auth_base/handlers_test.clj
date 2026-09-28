@@ -378,6 +378,19 @@
         (str "own clock 3000: 7 seconds left — timed by the map's clock; the ceremony's, which"
              " has not moved, would say 10"))))
 
+(deftest a-window-longer-than-the-clock-has-left-still-answers-a-429-with-its-retry-after
+  ;; The limiter's own clock at 0, so the refusal is Long/MAX_VALUE milliseconds from the
+  ;; reopening: rounding that up to whole seconds must not overflow either.
+  (let [{:keys [issue]} (fixture {:subjects {}
+                                  :rate-limit {:limit 1 :window-ms Long/MAX_VALUE :clock (constantly 0)}})]
+    (is (= {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}
+           (post issue "a@x.test"))
+        "the first attempt passes")
+    (is (= {:status 429 :headers {"Retry-After" "9223372036854776" "Cache-Control" "no-store"}
+            :body "<page{:limited? true}>"}
+           (post issue "a@x.test"))
+        "the second is refused, and 9223372036854775807 ms is 9223372036854776 seconds rounded up")))
+
 (deftest logout-deletes-the-session-and-lands-where-the-host-said
   (let [{:keys [logout]} (fixture {})
         response (logout (mock/request :post "/out"))]

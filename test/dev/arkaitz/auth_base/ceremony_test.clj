@@ -711,3 +711,23 @@
       (is (= {:id 1} (ceremony/redeem! ceremony token)))
       (is (= [[:take-challenge! token] [:subject-for "ada@x.test"]] @log)
           "one question to the store: the second is asked at registration only"))))
+
+(deftest a-ttl-longer-than-the-clock-has-left-saturates-the-expiry--and-issue!-still-works
+  ;; Every value `ceremony` accepts must be one `issue!` can use: a sum that overflowed
+  ;; made every login a 500 with the configuration looking perfectly valid.
+  (let [{:keys [ceremony clock log deliveries]} (fixture {:subjects {"ada@x.test" {:id 1}}
+                                                          :ttl-ms   Long/MAX_VALUE})]
+    (is (nil? (ceremony/issue! ceremony "ada@x.test"))
+        "issued at 1000 with a ttl of Long/MAX_VALUE, and issue! returned — it did not throw")
+    (is (= 1 (count @deliveries)) "the link was delivered")
+    (let [token (token-of (second (first @deliveries)))]
+      (is (= [[:put-challenge! token "ada@x.test" Long/MAX_VALUE]] @log)
+          "one challenge, stored under the delivered token, expiring at the last instant a long holds")
+      (reset! clock (dec Long/MAX_VALUE))
+      (is (= {:id 1} (ceremony/redeem! ceremony token))
+          "and it is still good one millisecond before that instant")))
+  (let [{:keys [ceremony log]} (fixture {:ttl-ms (- Long/MAX_VALUE 1001)})]
+    (ceremony/issue! ceremony "ada@x.test")
+    (is (= (dec Long/MAX_VALUE) (nth (first @log) 3))
+        (str "a ttl that still fits is summed exactly — 1000 + (MAX - 1001) is MAX - 1 — so the"
+             " ceiling is reached only by a sum that would overflow"))))

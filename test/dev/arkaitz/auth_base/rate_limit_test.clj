@@ -181,3 +181,30 @@
              (try (make opts)
                   (catch ExceptionInfo e [(:config-key (ex-data e)) (:value (ex-data e))])))
           (str ctor " refuses, naming the key: " label)))))
+
+(deftest a-window-longer-than-the-clock-has-left-saturates--and-the-limiter-still-decides
+  ;; Every value the constructor accepts must be one the limiter can use: a sum that
+  ;; overflowed made every sign-in a 500 with the configuration looking valid.
+  (let [clock  (atom 1000)
+        decide (decider clock {:limit 1 :window-ms Long/MAX_VALUE})
+        at     (fn [t] (reset! clock t) (decide "a"))]
+    (is (= {:allowed? true :retry-after-ms nil} (at 1000))
+        "t=1000: the first attempt opens a window of Long/MAX_VALUE, and did not throw")
+    (is (= {:allowed? false :retry-after-ms (- Long/MAX_VALUE 1000)} (at 1000))
+        "t=1000: refused, and the window closes at the last instant a long holds")
+    (is (= {:allowed? false :retry-after-ms 1} (at (dec Long/MAX_VALUE)))
+        "t=MAX-1: still refused, one millisecond left"))
+  (let [clock  (atom 1000)
+        decide (decider clock {:limit 1 :window-ms (- Long/MAX_VALUE 1001)})
+        at     (fn [t] (reset! clock t) (decide "a"))]
+    (at 1000)
+    (is (= {:allowed? false :retry-after-ms 1} (at (- Long/MAX_VALUE 2)))
+        "a window that still fits is summed exactly: opened at 1000, it closes at MAX - 1")
+    (is (= {:allowed? true :retry-after-ms nil} (at (dec Long/MAX_VALUE)))
+        "and reopens there, not at the ceiling"))
+  (let [clock  (atom -1000)
+        decide (decider clock {:limit 1 :window-ms Long/MAX_VALUE})]
+    (decide "a")
+    (is (= {:allowed? false :retry-after-ms Long/MAX_VALUE} (decide "a"))
+        (str "a clock before the epoch cannot overflow a positive window, so it is summed exactly"
+             " — and the guard that saturates must not overflow computing the room left"))))

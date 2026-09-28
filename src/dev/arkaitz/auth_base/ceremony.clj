@@ -20,6 +20,7 @@
   about the address; it goes to the operator instead."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [dev.arkaitz.auth-base.instant :as instant]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.token :as token])
   (:import [java.util Locale]))
@@ -156,7 +157,7 @@
                     {:identifier-type (some-> identifier class .getName)})))
   (let [identifier (normalise identifier)
         token      (token/mint)]
-    (store/put-challenge! store token identifier (+ (clock) ttl-ms))
+    (store/put-challenge! store token identifier (instant/later (clock) ttl-ms))
     (try
       (deliver! identifier (link-for link token))
       ;; SPEC §8: it must not tell the caller whether the address was known —

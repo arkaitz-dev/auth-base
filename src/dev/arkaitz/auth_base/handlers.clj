@@ -90,9 +90,11 @@
                  [:rate-limit] rate-limit)))
 
 (defn- whole-seconds
-  "Rounded up, so a client that waits exactly this long finds the window open."
+  "Rounded up, so a client that waits exactly this long finds the window open. By
+  quotient and remainder rather than `(quot (+ ms 999) 1000)`: a window as long as a
+  long leaves up to `Long/MAX_VALUE` ms, and adding to that overflows."
   [ms]
-  (quot (+ ms 999) 1000))
+  (cond-> (quot ms 1000) (pos? (rem ms 1000)) inc))
 
 (def ^:private max-identifier-length
   "The longest identifier the form takes, as the ceremony will store it: the width of

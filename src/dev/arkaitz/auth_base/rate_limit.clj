@@ -17,7 +17,8 @@
   dropping the oldest already drops an expired one whenever there is any. A
   pass that removed the expired ones first would decide exactly the same thing
   every time, which is why there is not one."
-  (:refer-clojure :exclude [key]))
+  (:refer-clojure :exclude [key])
+  (:require [dev.arkaitz.auth-base.instant :as instant]))
 
 (def ^:private default-max-keys 10000)
 
@@ -59,7 +60,7 @@
             [count* start] (get (swap! windows
                                        (fn [windows]
                                          (let [[n start] (get windows key)
-                                               fresh?    (or (nil? start) (<= (+ start window-ms) now))
+                                               fresh?    (or (nil? start) (<= (instant/later start window-ms) now))
                                                windows   (if (and fresh? (<= max-keys (clojure.core/count windows)))
                                                            (evict windows)
                                                            windows)]
@@ -69,7 +70,7 @@
                                 key)]
         (if (<= count* limit)
           {:allowed? true :retry-after-ms nil}
-          {:allowed? false :retry-after-ms (- (+ start window-ms) now)})))))
+          {:allowed? false :retry-after-ms (- (instant/later start window-ms) now)})))))
 
 (defn fixed-window
   "A limiter: `(fn [key] true)` while `key` has been seen fewer than `:limit`
