@@ -605,3 +605,31 @@
       (is (identical? request received) "the request itself, not a copy")
       (is (= ["ada@x.test" true] [identifier (str/starts-with? link "https://x.test/entrar/")]) "with the identifier and the link"))
     (is (= [:put-challenge!] (support/calls log)) "and the request made issue! ask the store nothing more")))
+
+(deftest under-web-base-a-redemption-logs-its-route-and-never-its-token
+  ;; The route data asks web-base to log the redemption by its template; this is where
+  ;; that is observed, on the web-base auth-base's tests run against. A spent token is
+  ;; logged the same way: the path is the secret, whatever the answer.
+  (let [deliveries (atom [])
+        ceremony   (ceremony/ceremony {:store    (store/in-memory {:subjects {"ada@x.test" {:id 1}}})
+                                       :deliver! (fn [id link] (swap! deliveries conj [id link]))
+                                       :link     {:base-url "https://x.test" :redeem-path "/entrar"}})
+        app        (wb/handler {:routes     (handlers/routes ceremony {:view (fn [r _] [:form (security/csrf-field r)])
+                                                                       :login-path "/login"})
+                                :subject-fn (session/subject-fn ceremony)
+                                :session    {:store (memory/memory-store (atom {}))}
+                                :csrf       false})
+        _          (app (-> (mock/request :post "/login" {"identifier" "ada@x.test"})))
+        token      (token-of (second (last @deliveries)))
+        access     (fn [] (->> (lt/the-log)
+                               (filter #(= 'dev.arkaitz.web-base.log (ns-name (:logger-ns %))))
+                               (mapv #(str/replace (:message %) #"\d+ms$" "<n>ms"))))]
+    (is (string? token) "witness: a link was issued")
+    (lt/with-log
+      (is (= 303 (:status (app (mock/request :get (str "/entrar/" token))))) "witness: the redemption answered")
+      (is (= 303 (:status (app (mock/request :get (str "/entrar/" token))))) "witness: and the spent one too")
+      (app (mock/request :get "/login"))
+      (is (= ["GET /entrar/:token 303 <n>ms" "GET /entrar/:token 303 <n>ms" "GET /login 200 <n>ms"] (access))
+          "the redemption is logged by its template, used or spent; the login page, unmarked, by its path")
+      (is (not (str/includes? (pr-str (mapv (juxt :message #(some-> % :throwable ex-data)) (lt/the-log))) token))
+          "and the token reaches no line"))))
