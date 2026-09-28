@@ -91,6 +91,23 @@ this module knows about pages. `{:limited? true}` is the form refused by the rat
 limit, answered with status 429: give it a sentence, or the person sees the ordinary
 form and no reason.
 
+Every state also carries `:action`, the path your form posts to (`:login-path`), and
+`:field`, the name its input must have (`:field`, default `"identifier"`). Use them
+instead of spelling either by hand: a form that posts elsewhere, or names its input
+otherwise, signs nobody in and raises no error.
+
+```clojure
+(defn login [request {:keys [sent? spent? limited? action field]}]
+  (list
+   (when sent?    [:p "If that address has an account, the link is on its way."])
+   (when spent?   [:p "That link no longer works: it is single use and it expires."])
+   (when limited? [:p "Too many attempts from here. Wait a little and ask again."])
+   [:form {:method "post" :action action}
+    (security/csrf-field request)                 ; web-base's; see below
+    [:input {:type "email" :name field :required true}]
+    [:button {:type "submit"} "Send me a link"]]))
+```
+
 Then `(auth/subject-fn ceremony)` is your `request → subject-or-nil`, and it is also
 where revocation takes effect.
 
@@ -395,7 +412,7 @@ something to name when there is no local identity at all.
 
 | key | meaning |
 |---|---|
-| `:view` | `(fn [request state])` → a `:body` (required) |
+| `:view` | `(fn [request state])` → a `:body` (required); every state carries `:action` and `:field` |
 | `:login-path` | where the form lives (required) |
 | `:logout-path` | where the logout POST goes (default `/logout`) |
 | `:after-login` | where a redeemed link lands (default `/`) |

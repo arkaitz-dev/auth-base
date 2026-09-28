@@ -170,4 +170,8 @@
       (is (some? (get-in r [:headers "Retry-After"])) "saying when to come back")
       (is (str/includes? (str (:body r)) "Demasiados intentos") "with the host's own sentence for it")
       (is (str/includes? (str (:body r)) "Enviar enlace") "and the form, so the person is still on the page")
+      (is (str/includes? (str (:body r)) "<form method=\"post\" action=\"/entrar\">")
+          "posting where the handlers are mounted, as the 429's state told the view")
+      (is (str/includes? (str (:body r)) "<input name=\"identifier\"")
+          "with its input named as the POST reads it")
       (is (not (str/includes? (str (:body r)) "va de camino")) "and not the sentence of a link that was sent"))))

@@ -37,8 +37,10 @@
 (defn login-view
   "The one view auth-base asks a host for. It is called with the request and
   one of four states, and returns whatever this host's renderer takes — here
-  a string, because there is no renderer."
-  [_request {:keys [sent? spent? limited?]}]
+  a string, because there is no renderer. The form posts to the state's
+  `:action` and names its input `:field`, so it cannot disagree with the
+  handlers' configuration."
+  [_request {:keys [sent? spent? limited? action field]}]
   (page "Entrar"
         (when sent?
           "<p><strong>Si esa dirección existe, el enlace va de camino.</strong> "
@@ -47,8 +49,8 @@
           "<p><strong>Ese enlace ya no vale.</strong> Se usa una sola vez y caduca.</p>")
         (when limited?
           "<p><strong>Demasiados intentos desde aquí.</strong> Espera un poco y vuelve a pedir el enlace.</p>")
-        "<form method=\"post\" action=\"/entrar\">"
-        "<label>Dirección <input name=\"identifier\" type=\"email\" required autofocus></label> "
+        "<form method=\"post\" action=\"" (escape action) "\">"
+        "<label>Dirección <input name=\"" (escape field) "\" type=\"email\" required autofocus></label> "
         "<button type=\"submit\">Enviar enlace</button></form>"
         "<p class=\"note\">La respuesta es la misma se conozca o no la dirección (SPEC §11).</p>"))
 

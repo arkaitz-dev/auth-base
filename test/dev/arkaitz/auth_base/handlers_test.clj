@@ -39,7 +39,8 @@
                                                        (some-> views (swap! inc))
                                                        ;; The state the view was handed, spelt into the
                                                        ;; body, so the 429's `{:limited? true}` is
-                                                       ;; observable — and `{}` still reads "<page>".
+                                                       ;; observable, with the form's `:action` and
+                                                       ;; `:field` that every state carries.
                                                        (str "<page" (when (seq state) (pr-str state)) ">"))
                                        :login-path   "/login"
                                        :logout-path  "/out"
@@ -65,11 +66,11 @@
 (deftest the-login-page-renders-the-hosts-view-with-the-state-the-query-says
   (let [{:keys [form]} (fixture {})]
     (doseq [[query expected]
-            [[nil            {}]
-             ["ab=sent"      {:sent? true}]
-             ["ab=spent"     {:spent? true}]
-             ["ab=nonsense"  {}]
-             ["other=sent"   {}]]]
+            [[nil            {:action "/login" :field "identifier"}]
+             ["ab=sent"      {:sent? true :action "/login" :field "identifier"}]
+             ["ab=spent"     {:spent? true :action "/login" :field "identifier"}]
+             ["ab=nonsense"  {:action "/login" :field "identifier"}]
+             ["other=sent"   {:action "/login" :field "identifier"}]]]
       (let [seen (atom ::never)
             {:keys [form]} (fixture {:views nil})
             form (:form (handlers/handlers (:ceremony (fixture {}))
@@ -80,6 +81,41 @@
             (str "the view was told the state, for " (pr-str query)))
         (is (= {:status 200 :headers {"Cache-Control" "no-store"} :body "<page>"} response)
             (str "and its body is the response, uncached, for " (pr-str query)))))))
+
+(deftest every-view-state-carries-the-configured-action-and-field--and-the-post-reads-that-field
+  ;; A form that posts elsewhere, or names its input otherwise, signs nobody in and says
+  ;; nothing: the view is handed both so it never has to spell them.
+  (let [seen       (atom [])
+        deliveries (atom [])
+        c          (ceremony/ceremony {:store    (store/in-memory {})
+                                       :deliver! (fn [id link] (swap! deliveries conj [id link]))
+                                       :link     {:base-url "https://x.test" :redeem-path "/entrar"}})
+        {:keys [form issue]} (handlers/handlers c {:view       (fn [_ state] (swap! seen conj state) "<page>")
+                                                   :login-path "/sign-in"
+                                                   :field      "email"
+                                                   :rate-limit {:limit 2 :window-ms 60000}})
+        get*  #(form (assoc (mock/request :get "/sign-in") :query-string %))
+        post* #(issue (assoc (mock/request :post "/sign-in") :form-params % :remote-addr "10.0.0.1"))]
+    (get* nil)
+    (let [{:keys [action field]} (first @seen)]
+      (is (= {:status 303 :headers {"Location" "/sign-in" "Cache-Control" "no-store"} :body ""}
+             (post* {"identifier" "a@x.test"}))
+          "witness: the default field name is not read under this configuration")
+      (is (= {:status 303 :headers {"Location" "/sign-in?ab=sent" "Cache-Control" "no-store"} :body ""}
+             (post* {field "a@x.test"}))
+          "witness: a POST whose field is named as the view was told is the one that issues")
+      (is (= ["a@x.test"] (mapv first @deliveries))
+          "and it, only it, delivered a link")
+      (is (= "/sign-in" action) "the action is the configured login path, where the POST is mounted"))
+    (get* "ab=sent")
+    (get* "ab=spent")
+    (is (= 429 (:status (post* {"email" "b@x.test"}))) "precondition: the third POST is refused")
+    (is (= [{:action "/sign-in" :field "email"}
+            {:sent? true :action "/sign-in" :field "email"}
+            {:spent? true :action "/sign-in" :field "email"}
+            {:limited? true :action "/sign-in" :field "email"}]
+           @seen)
+        "every state the view was handed — the form, sent, spent and the 429 — carried both, exactly")))
 
 ;; --- redemption -----------------------------------------------------------
 
@@ -289,7 +325,7 @@
   (let [{:keys [issue log deliveries clock]}
         (fixture {:subjects {"a@x.test" {:id 1}}
                   :rate-limit {:limit 2 :window-ms 60000}})
-        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body "<page{:limited? true}>"})
+        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body "<page{:limited? true, :action \"/login\", :field \"identifier\"}>"})
         sent    {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}]
     ;; The window opens at 1000 and closes at 61000. Refusals are taken away from its
     ;; first instant on purpose: there, and only there, a header that ignored the
@@ -321,7 +357,7 @@
 (deftest retry-after-is-the-whole-seconds-until-this-sources-window-reopens--rounded-up
   (let [{:keys [issue log deliveries clock]}
         (fixture {:subjects {} :rate-limit {:limit 1 :window-ms 900000}})
-        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body "<page{:limited? true}>"})
+        refused (fn [seconds] {:status 429 :headers {"Retry-After" seconds "Cache-Control" "no-store"} :body "<page{:limited? true, :action \"/login\", :field \"identifier\"}>"})
         sent    {:status 303 :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"} :body ""}
         at      (fn [t] (reset! clock t) (post issue "a@x.test"))]
     (is (= sent (at 1000)) "t=1000: the only attempt the window allows, and it opens the window")
@@ -344,7 +380,7 @@
         views  (atom 0)
         {:keys [issue log deliveries]}
         (fixture {:subjects {} :views views :rate-limit (fn [k] (swap! asked conj k) @answer)})]
-    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body "<page{:limited? true}>"}
+    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body "<page{:limited? true, :action \"/login\", :field \"identifier\"}>"}
            (post issue "a@x.test" :from "10.0.0.7"))
         "the host's false is a 429 carrying the host's page in its limited state, with no delay named")
     (is (= 1 @views) "the view was drawn once for that refusal")
@@ -357,7 +393,7 @@
     (is (= 1 @views) "a sign-in that goes through draws no page: it redirects")
     (is (= ["10.0.0.7" "10.0.0.7"] @asked) "the host's function was asked the source, once per request")
     (reset! answer nil)
-    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body "<page{:limited? true}>"}
+    (is (= {:status 429 :headers {"Cache-Control" "no-store"} :body "<page{:limited? true, :action \"/login\", :field \"identifier\"}>"}
            (post issue "a@x.test" :from "10.0.0.7"))
         (str "and nil refuses, as it always did — a limiter that answers nil from a `when` or"
              " a `get` must not become no limit at all"))))
@@ -373,7 +409,7 @@
            (post issue "a@x.test"))
         "own clock 0: the window opens")
     (reset! own 3000)
-    (is (= {:status 429 :headers {"Retry-After" "7" "Cache-Control" "no-store"} :body "<page{:limited? true}>"}
+    (is (= {:status 429 :headers {"Retry-After" "7" "Cache-Control" "no-store"} :body "<page{:limited? true, :action \"/login\", :field \"identifier\"}>"}
            (post issue "a@x.test"))
         (str "own clock 3000: 7 seconds left — timed by the map's clock; the ceremony's, which"
              " has not moved, would say 10"))))
@@ -387,7 +423,7 @@
            (post issue "a@x.test"))
         "the first attempt passes")
     (is (= {:status 429 :headers {"Retry-After" "9223372036854776" "Cache-Control" "no-store"}
-            :body "<page{:limited? true}>"}
+            :body "<page{:limited? true, :action \"/login\", :field \"identifier\"}>"}
            (post issue "a@x.test"))
         "the second is refused, and 9223372036854775807 ms is 9223372036854776 seconds rounded up")))
 

@@ -67,7 +67,11 @@
     (is (str/includes? page "<!DOCTYPE html>") "a whole document")
     (is (str/includes? page "auth-base × web-base") "wearing the host's shell")
     (is (str/includes? page "__anti-forgery-token") "carrying web-base's CSRF field")
-    (is (str/includes? page "Enviar enlace") "and the host's own words")))
+    (is (str/includes? page "Enviar enlace") "and the host's own words")
+    (is (str/includes? page "<form action=\"/entrar\" method=\"post\">")
+        "posting where the handlers are mounted, as the state told the view")
+    (is (str/includes? page "name=\"identifier\"")
+        "with its input named as the POST reads it, as the state told the view")))
 
 (deftest a-post-without-web-bases-csrf-token-is-refused-before-the-module-sees-it
   ;; The module owns none of this, and must not: the token lives in the

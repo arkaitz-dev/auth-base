@@ -10,6 +10,12 @@
   and the page, so the person sees the form and a reason rather than a browser's own
   error page.
 
+  Every state also carries `:action`, the path the form must post to, and `:field`, the
+  name its identifier input must have — the `:login-path` and `:field` these handlers
+  were given. A view that spells them itself can disagree with the configuration, and
+  the disagreement is silent: the form posts where nothing listens, or the POST finds
+  no identifier and answers the ordinary page, and nobody can sign in.
+
   Three details are security, not ergonomics:
 
   **The redemption never renders.** A link opened from a page carries its URL to
@@ -125,7 +131,8 @@
   "The four handlers, as a map. Mount them yourself, or hand the same options
   to `routes`.
 
-    :view          (fn [request state]) → a `:body` (required)
+    :view          (fn [request state]) → a `:body` (required); every state
+                   carries `:action` and `:field`, see the namespace docstring
     :login-path    where the form lives (required)
     :logout-path   where the logout POST goes (default \"/logout\")
     :after-login   where a redeemed link lands (default \"/\")
@@ -165,12 +172,14 @@
         redeem-path  (get-in ceremony [:link :redeem-path])
         sent         (no-store (response/redirect (str login-path "?ab=sent") :see-other))
         spent        (no-store (response/redirect (str login-path "?ab=spent") :see-other))
-        blank        (no-store (response/redirect login-path :see-other))]
+        blank        (no-store (response/redirect login-path :see-other))
+        render       (fn [request state]
+                       (view request (assoc state :action login-path :field field)))]
     {:paths {:login login-path :logout logout-path :redeem (str redeem-path "/:token")}
 
      :form
      (fn [request]
-       (no-store (response/response (view request (state-of request)))))
+       (no-store (response/response (render request (state-of request)))))
 
      :issue
      (fn [request]
@@ -180,7 +189,7 @@
        ;; their allowance.
        (let [{:keys [allowed? retry-after-ms]} (decide (:remote-addr request))]
          (if-not allowed?
-           (cond-> (response/status (response/response (view request {:limited? true})) 429)
+           (cond-> (response/status (response/response (render request {:limited? true})) 429)
              retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))
              true           no-store)
          (let [identifier (get (:form-params request) field)]
