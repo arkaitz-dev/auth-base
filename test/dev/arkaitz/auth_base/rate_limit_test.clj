@@ -215,3 +215,150 @@
     (is (= {:allowed? false :retry-after-ms Long/MAX_VALUE} (decide "a"))
         (str "a clock that went back across the epoch after a saturated window opened: the wait"
              " saturates instead of overflowing, so the refusal stays a 429 and not a 500"))))
+
+;; --- the index the eviction reads --------------------------------------------------
+
+(deftest keys-of-mixed-types-are-admitted-and-evicted-oldest-first-at-the-cap
+  ;; Six windows opened at the same instant: an index that broke the tie by the key
+  ;; itself would compare a string with a keyword. Nothing here catches that throw.
+  (let [clock    (atom 0)
+        allow?   (limiter clock {:limit 1 :window-ms 1000 :max-keys 7})
+        original ["a" :b 1 (java.util.UUID/fromString "00000000-0000-0000-0000-000000000001") [1 2] nil]]
+    (doseq [k original] (is (true? (allow? k)) (str (pr-str k) " opens its window at 0")))
+    (reset! clock 1)
+    (is (true? (allow? "live")) "live opens at 1, and the table is full")
+    (reset! clock 2)
+    (doseq [n ["n1" "n2" "n3" "n4" "n5" "n6"]]
+      (is (true? (allow? n)) (str n " is admitted at the cap"))
+      (is (false? (allow? "live"))
+          (str n " pushed out one of the six windows opened at 0, never live, opened at 1")))
+    ;; Before any of them is re-admitted, which would push windows out in turn.
+    (let [answers (mapv allow? original)]
+      (is (= [true true true true true true] answers)
+          (str "every window opened at 0 was among the oldest and was forgotten for the six newcomers: "
+               (pr-str (zipmap (map pr-str original) answers)))))))
+
+(deftest a-window-reopened-late-is-not-evicted-through-the-slot-it-left-behind
+  (let [clock  (atom 0)
+        allow? (limiter clock {:limit 1 :window-ms 100 :max-keys 2})]
+    (is (true? (allow? "a")) "a opens at 0")
+    (reset! clock 5)
+    (is (false? (allow? "a")) "a is counted inside its window, which keeps its place in the index")
+    (reset! clock 10)
+    (is (true? (allow? "b")) "b opens at 10, and the table is full")
+    (reset! clock 100)
+    (is (true? (allow? "a")) "a's window has expired, and it reopens at 100")
+    ;; A guard, not a discriminator: under a clock that only moves forward, the rule this
+    ;; replaced — evict on any fresh window at the cap — would drop an expired window
+    ;; here, which costs nothing either.
+    (is (false? (allow? "b")) "a reopening at the cap cost no live window: b is still counted")
+    (reset! clock 101)
+    (is (true? (allow? "c")) "c is admitted at the cap")
+    (is (false? (allow? "a"))
+        "a reopened at 100 and is live; c's eviction took b, not a through the slot a left behind at 0")
+    (is (true? (allow? "b")) "b, opened at 10, was the oldest live window and the one c pushed out")))
+
+(defn- reference-limiter
+  "The limiter as a plain map and a walk, written here: the oldest window is the least
+  start. It is the schedule the index must keep, computed without the index; the clock
+  it is driven by only moves forward, so no two windows tie. `evictions` counts the
+  windows it dropped."
+  [{:keys [limit window-ms max-keys]} evictions]
+  (let [state (atom {:windows {} :opened 0})]
+    (fn [key now]
+      (let [{:keys [windows opened]} @state
+            [n start] (get windows key)
+            fresh?    (or (nil? start) (<= (+ start window-ms) now))
+            windows   (if (and (nil? start) (<= max-keys (count windows)))
+                        (do (swap! evictions inc) windows)
+                        windows)
+            windows   (if (and (nil? start) (<= max-keys (count windows)))
+                        (dissoc windows (clojure.core/key (first (sort-by (fn [[_ [_ s o]]] [s o]) windows))))
+                        windows)
+            entry     (if fresh? [1 now opened] [(inc n) start (nth (get windows key) 2)])]
+        (reset! state {:windows (assoc windows key entry) :opened (cond-> opened fresh? inc)})
+        (<= (first entry) limit)))))
+
+(deftest the-limiter-keeps-the-schedule-of-a-walk-over-the-table
+  ;; A fixed seed, so a red reproduces; a strictly increasing clock, so no tie is pinned.
+  (let [opts      {:limit 2 :window-ms 60 :max-keys 8}
+        clock     (atom 0)
+        allow?    (limiter clock opts)
+        evictions (atom 0)
+        reference (reference-limiter opts evictions)
+        random    (java.util.Random. 20260928)
+        steps     (vec (for [_ (range 5000)] [(str "k" (.nextInt random 20)) (inc (.nextInt random 10))]))
+        verdicts  (for [[i [k dt]] (map-indexed vector steps)]
+                    (let [now (swap! clock + dt)]
+                      [i k (allow? k) (reference k now)]))
+        differ    (first (remove (fn [[_ _ a b]] (= a b)) verdicts))
+        refused   (count (filter (fn [[_ _ a]] (false? a)) verdicts))]
+    (is (and (pos? refused) (< refused 5000) (pos? @evictions))
+        (str "witness: the run refuses " refused " of 5000 and evicts " @evictions
+             " times, so both the count and the eviction order are exercised"))
+    (is (nil? differ) (str "the first step where the limiter and the walk disagree [step key limiter walk]: "
+                           (pr-str differ)))))
+
+(defn- cpu-ns-per-new-key
+  "The least thread CPU time, over batches, that a key the table has never seen costs at
+  the cap of a table of `max-keys` windows."
+  [max-keys]
+  (let [bean   (java.lang.management.ManagementFactory/getThreadMXBean)
+        allow? (rate-limit/fixed-window {:limit 1 :window-ms 1000 :max-keys max-keys :clock (constantly 0)})
+        batch  200
+        run    (fn [prefix] (let [ks (mapv #(str prefix "-" %) (range batch))
+                                  t0 (.getCurrentThreadCpuTime bean)]
+                              (run! allow? ks)
+                              (- (.getCurrentThreadCpuTime bean) t0)))]
+    (run! allow? (map #(str "fill-" %) (range max-keys)))
+    (run "warmup")
+    (quot (apply min (map #(run (str "batch" %)) (range 7))) batch)))
+
+(deftest a-new-key-at-the-cap-costs-the-same-whatever-the-table-holds
+  ;; Two tables whose caps differ 64x. A walk over the table to find the oldest window
+  ;; predicts a cost per key ~64x larger in the larger one; an index predicts log2(10000)
+  ;; / log2(156) ≈ 1.8x, more with a cache that no longer holds the table. The cut at 8
+  ;; sits between the two. Measured on this machine 2026-09-28, three runs each: the
+  ;; index 1.2x, 1.2x, 2.1x (≈2.5 µs a key at 10000); the walk it replaced 41x, 56x, 63x
+  ;; (≈0.7 ms a key at 10000).
+  ;; Thread CPU time, not the wall clock, so scheduling and pauses outside the thread do
+  ;; not count; the least of seven batches, after a batch that warms the JIT.
+  (let [small  (min (cpu-ns-per-new-key 156) (do (cpu-ns-per-new-key 10000) (cpu-ns-per-new-key 156)))
+        large  (cpu-ns-per-new-key 10000)
+        ratio  (/ (double large) (max 1 small))]
+    (is (pos? small) "witness: the thread's CPU time is measured on this JVM")
+    (is (< ratio 8)
+        (format "at the cap a new key costs %d ns with 156 windows and %d ns with 10000 (ratio %.1f): a walk over the table predicts ~64x and an index ~2x — the eviction is paying for every key"
+                small large ratio))))
+
+(defn- concurrently
+  "Runs `(f thread-index)` on `threads` threads released together, and answers their
+  results once all are done. The 10 s bound is a hang guard: a deadlock is a red, never
+  a hung suite."
+  [threads f]
+  (let [start   (java.util.concurrent.CountDownLatch. 1)
+        futures (mapv (fn [i] (future (.await start) (f i))) (range threads))]
+    (.countDown start)
+    (mapv #(deref % 10000 ::hung) futures)))
+
+(deftest callers-racing-on-one-key-are-admitted-exactly-limit-times
+  (let [allow?  (rate-limit/fixed-window {:limit 50 :window-ms 60000 :clock (constantly 0)})
+        results (concurrently 8 (fn [_] (mapv (fn [_] (allow? "one")) (range 100))))]
+    (is (not-any? #{::hung} results) "witness: every thread finished")
+    (is (= 50 (count (filter true? (apply concat results))))
+        "800 attempts from eight threads at once, and exactly the limit of 50 admitted: no update is lost to a race")))
+
+(deftest callers-racing-at-the-cap-leave-the-index-and-the-table-in-step
+  ;; Eight threads open 4000 windows at a cap of 64 at once. If the index and the table
+  ;; ever parted — a key in one and not the other — that key could never be evicted, and
+  ;; the probes below would not push it out.
+  (let [clock  (atom 0)
+        allow? (limiter clock {:limit 1 :window-ms 60000 :max-keys 64})
+        results (concurrently 8 (fn [t] (mapv (fn [i] (allow? (str "t" t "-" i))) (range 500))))]
+    (is (not-any? #{::hung} results) "witness: every thread finished")
+    (is (every? true? (apply concat results)) "every newcomer was admitted, the cap making room each time")
+    (let [survivors (for [t (range 8) i (range 500)] (str "t" t "-" i))]
+      (reset! clock 1)
+      (run! #(allow? (str "probe-" %)) (range 64))
+      (is (every? true? (map allow? survivors))
+          "64 probes opened after the race pushed every window it left out: none was stranded outside the index"))))

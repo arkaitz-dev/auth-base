@@ -22,10 +22,31 @@
 
 (def ^:private default-max-keys 10000)
 
+(def ^:private empty-table
+  "`:windows` is key → `[count start slot]`; `:order` is slot → key, sorted, where a
+  slot is `[start n]` and `n` counts the windows ever opened. The slot orders by start
+  without ever comparing two keys, which may be of any type — two windows opened in the
+  same millisecond are told apart by `n`, and which of them goes first is not a promise —
+  and it makes finding the
+  oldest window a lookup instead of a walk over every key — a walk an anonymous caller
+  could make every request pay for, by keeping the table full."
+  {:windows {} :order (sorted-map) :opened 0})
+
 (defn- evict
   "Without the oldest window."
-  [windows]
-  (dissoc windows (clojure.core/key (apply min-key (comp second val) windows))))
+  [{:keys [windows order] :as table}]
+  (let [[slot key] (first order)]
+    (assoc table :windows (dissoc windows key) :order (dissoc order slot))))
+
+(defn- open
+  "With a fresh window for `key` starting at `now`, in place of its old one if any."
+  [{:keys [windows order opened] :as table} key now]
+  (let [slot [now opened]]
+    (assoc table
+           :windows (assoc windows key [1 now slot])
+           :order   (-> (if-let [[_ _ old] (get windows key)] (dissoc order old) order)
+                        (assoc slot key))
+           :opened  (inc opened))))
 
 (defn fixed-window-decider
   "The limiter below, answering why as well as whether: `(fn [key] {:allowed? bool
@@ -54,20 +75,19 @@
                     {:config-key [:rate-limit :clock] :value clock})))
   (let [clock    (or clock #(System/currentTimeMillis))
         max-keys (or max-keys default-max-keys)
-        windows  (atom {})]
+        table    (atom empty-table)]
     (fn decide [key]
       (let [now (clock)
-            [count* start] (get (swap! windows
-                                       (fn [windows]
-                                         (let [[n start] (get windows key)
-                                               fresh?    (or (nil? start) (<= (instant/later start window-ms) now))
-                                               windows   (if (and fresh? (<= max-keys (clojure.core/count windows)))
-                                                           (evict windows)
-                                                           windows)]
-                                           (if fresh?
-                                             (assoc windows key [1 now])
-                                             (assoc windows key [(inc n) start])))))
-                                key)]
+            [count* start] (get-in (swap! table
+                                          (fn [{:keys [windows] :as table}]
+                                            (let [[n start slot] (get windows key)
+                                                  fresh? (or (nil? start) (<= (instant/later start window-ms) now))]
+                                              (cond
+                                                (not fresh?) (assoc-in table [:windows key] [(inc n) start slot])
+                                                (and (nil? start) (<= max-keys (clojure.core/count windows)))
+                                                (open (evict table) key now)
+                                                :else (open table key now)))))
+                                   [:windows key])]
         (if (<= count* limit)
           {:allowed? true :retry-after-ms nil}
           {:allowed? false :retry-after-ms (instant/until (instant/later start window-ms) now)})))))
