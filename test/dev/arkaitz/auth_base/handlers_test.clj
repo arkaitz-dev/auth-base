@@ -455,6 +455,8 @@
              ["a view that is not a fn" {:view "page" :login-path "/login"}  [[:view] "page"]]
              ["no login path"      {:view (fn [_ _])}                        [[:login-path] nil]]
              ["a relative login path" {:view (fn [_ _]) :login-path "login"} [[:login-path] "login"]]
+             ["a login path with a query" {:view (fn [_ _]) :login-path "/login?next=/"} [[:login-path] "/login?next=/"]]
+             ["a login path with a fragment" {:view (fn [_ _]) :login-path "/login#form"} [[:login-path] "/login#form"]]
              ["a rate limit that is neither a map nor a fn"
               {:view (fn [_ _]) :login-path "/login" :rate-limit 5}          [[:rate-limit] 5]]
              ["an option nobody reads"

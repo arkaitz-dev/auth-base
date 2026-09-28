@@ -207,4 +207,11 @@
     (decide "a")
     (is (= {:allowed? false :retry-after-ms Long/MAX_VALUE} (decide "a"))
         (str "a clock before the epoch cannot overflow a positive window, so it is summed exactly"
-             " — and the guard that saturates must not overflow computing the room left"))))
+             " — and the guard that saturates must not overflow computing the room left")))
+  (let [clock  (atom 1000)
+        decide (decider clock {:limit 1 :window-ms Long/MAX_VALUE})]
+    (decide "a")
+    (reset! clock -1000)
+    (is (= {:allowed? false :retry-after-ms Long/MAX_VALUE} (decide "a"))
+        (str "a clock that went back across the epoch after a saturated window opened: the wait"
+             " saturates instead of overflowing, so the refusal stays a 429 and not a 500"))))

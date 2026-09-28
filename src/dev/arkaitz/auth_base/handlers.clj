@@ -162,8 +162,11 @@
            (vec (sort unknown)) nil))
   (when-not (ifn? view)
     (fail! ":view must be a function of [request state]" [:view] view))
-  (when-not (and (string? login-path) (str/starts-with? login-path "/"))
-    (fail! ":login-path must be a path starting with \"/\"" [:login-path] login-path))
+  ;; A query or fragment would be mounted as part of a path no request ever matches,
+  ;; and the form's :action would post to it: nobody could sign in, and nothing says why.
+  (when-not (and (string? login-path) (str/starts-with? login-path "/")
+                 (not (re-find #"[?#]" login-path)))
+    (fail! ":login-path must be a path starting with \"/\", with no query or fragment" [:login-path] login-path))
   (let [logout-path  (or logout-path "/logout")
         after-login  (or after-login "/")
         after-logout (or after-logout login-path)

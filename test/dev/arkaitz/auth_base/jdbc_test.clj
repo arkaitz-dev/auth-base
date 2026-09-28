@@ -394,8 +394,9 @@
                           (doseq [[t e] [["t100" 100] ["t200" 200] ["t300" 300]]]
                             (plant! ds "INSERT INTO login_challenge (token, identifier, expires_at) VALUES (?, ?, ?)" t "x" e)))]
        (plant-three!)
-       (doseq [[label now] [["nil" nil] ["a string" "200"] ["a keyword" :now] ["a date" (java.util.Date. 200)]]]
-         (is (= ["auth-base jdbc: reclaim-expired! takes now as a number of epoch milliseconds" {:now now}]
+       (doseq [[label now] [["nil" nil] ["a string" "200"] ["a keyword" :now] ["a date" (java.util.Date. 200)]
+                            ["NaN, which is a number" ##NaN] ["a double" 200.0]]]
+         (is (= ["auth-base jdbc: reclaim-expired! takes now as an integer of epoch milliseconds" {:now now}]
                 (try (aj/reclaim-expired! ds now) nil
                      (catch clojure.lang.ExceptionInfo e [(ex-message e) (ex-data e)])))
              (str engine ": " label " is refused, naming the value"))

@@ -215,7 +215,9 @@
   like a table with nothing expired."
   [ds now]
   (let [ds (datasource! ds)]
-    (when-not (number? now)
-      (throw (ex-info "auth-base jdbc: reclaim-expired! takes now as a number of epoch milliseconds"
+    ;; An integer, not any number: ##NaN is a number, and `expires_at <= NaN` deletes
+    ;; nothing and answers 0, the silent shape this refusal exists to end.
+    (when-not (integer? now)
+      (throw (ex-info "auth-base jdbc: reclaim-expired! takes now as an integer of epoch milliseconds"
                       {:now now})))
     (changed (one ds "DELETE FROM login_challenge WHERE expires_at <= ?" now))))

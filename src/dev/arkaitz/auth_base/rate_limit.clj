@@ -70,7 +70,7 @@
                                 key)]
         (if (<= count* limit)
           {:allowed? true :retry-after-ms nil}
-          {:allowed? false :retry-after-ms (- (instant/later start window-ms) now)})))))
+          {:allowed? false :retry-after-ms (instant/until (instant/later start window-ms) now)})))))
 
 (defn fixed-window
   "A limiter: `(fn [key] true)` while `key` has been seen fewer than `:limit`

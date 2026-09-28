@@ -20,3 +20,13 @@
   (if (and (pos? now) (< (- Long/MAX_VALUE now) ms))
     Long/MAX_VALUE
     (+ now ms)))
+
+(defn until
+  "The milliseconds from `now` to `later`, or `Long/MAX_VALUE` when the difference has no
+  room in a long: a host's clock that went back across the epoch after `later` was
+  computed. Only a negative `now` can overflow it, and only then is
+  `(+ Long/MAX_VALUE now)` computed, which a negative `now` cannot overflow."
+  [later now]
+  (if (and (neg? now) (> later (+ Long/MAX_VALUE now)))
+    Long/MAX_VALUE
+    (- later now)))
