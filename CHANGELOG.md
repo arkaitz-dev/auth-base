@@ -6,7 +6,7 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.7.0 — unreleased
+## 0.7.0 — 2026-09-29
 
 - **Changed:** `wrap-revoked` judges a request as it arrived, before its handler runs,
   and takes a `:wb/subject` that is not nil as live: under web-base a signed-in page
@@ -19,7 +19,7 @@ the README says "since" beside the behaviour. Every release is on Clojars as
   the request that asked, so the message can speak its language. `issue!` takes the
   request as an optional third argument.
 - The redemption route carries `:wb/log-path :template`, so web-base 0.9.0 and later log
-  it without its token.
+  it without its token (the test that proves it runs against 0.9.0).
 - The rate limiter finds the oldest window through an index: a new source at the cap
   costs microseconds instead of a walk over every source (≈0.7 ms at 10000).
 
