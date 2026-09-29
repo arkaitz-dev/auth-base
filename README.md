@@ -144,7 +144,7 @@ which belongs to your stack, so your login view emits the field.
 ## Installed in web-base: the standard pages
 
 ```clojure
-{:deps {dev.arkaitz/web-base  {:mvn/version "0.11.0"}
+{:deps {dev.arkaitz/web-base  {:mvn/version "0.12.0"}
         dev.arkaitz/auth-base {:mvn/version "0.9.1"}}}
 ```
 
@@ -166,7 +166,9 @@ on its own; `(wb/expand config)` shows the result. **Give the paths to the plugi
 to your own config**: a `:login-path` of yours would win over the plugin's while its
 routes stayed where it mounted them, and the gate would send people to a page nobody
 serves. Keep them in one map and hand it to `identity` and `sign-out` too. `:i18n :default-locale` is required once a plugin brings a dictionary: the
-language is yours to choose. The plugin takes the handlers' options below, defaulting
+language is yours to choose, and so are the others — the pages speak English and Spanish,
+but a site serves only the languages it lists in `:i18n :locales` (web-base 0.12.0), the
+default alone when it lists none. `{:default-locale :en :locales [:en :es]}` serves both. The plugin takes the handlers' options below, defaulting
 `:login-path` to `/login` and `:rate-limit` to five links per source every fifteen
 minutes (an explicit nil sets none), plus `:layouts`.
 

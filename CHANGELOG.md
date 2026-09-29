@@ -6,6 +6,13 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.9.1 — 2026-09-29
+
+- On web-base 0.12.0, where a site's languages are its `:i18n :locales`: the standard
+  pages' Spanish is served only by a host that lists `:es`. On 0.11.0 an English-only
+  host answered a Spanish browser with a Spanish login and `<html lang="es">` on every
+  page.
+
 ## 0.9.0 — 2026-09-29
 
 - **Breaking:** auth-base is a web-base plugin (the user's decision of 2026-09-29, SPEC
