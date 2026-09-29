@@ -14,6 +14,13 @@ else. It is the other half of the seam `web-base` §5 leaves empty: that library
 
 ## Project state
 
+**0.9.0 (2026-09-29): a web-base plugin.** `dev.arkaitz.auth-base.web` — the standard
+sign-in and sign-out, brandable through `--ab-*`/`--wb-*` tokens, `ab-*` classes and
+`:ab/` dictionary keys in English and Spanish — installed with one line of web-base
+0.11.0's `:plugins`; `:revoke-path`, `:on-logout` and `:on-revoke` on the handlers; and
+`testing/sign-in`, `open-link`, `sign-out` and `mailbox-reader`. The demo is the
+plugin's acceptance test; the harness still proves the ceremony on Ring alone.
+
 **Implemented 2026-09-09.** The commit history is the record, one granular step per
 commit. Every namespace under `src/dev/arkaitz/auth_base/` is one seam of `SPEC.md`,
 and `src/dev/arkaitz/auth_base.clj`'s docstring is the wiring. `SPEC.md` §17 records
@@ -51,23 +58,30 @@ is refused by name.
 
 Browser smoke of the demo (Playwright, 2026-09-09; repeat after touching views): link
 redeemed → `/privado` names the subject → revoke ends the session that asked → the
-same link says spent; console free of CSP violations under the strict policy.
+same link says spent; console free of CSP violations under the strict policy. Repeated
+2026-09-29 on the plugin: the standard pages inside the demo's shell, `ab.css` served
+without a session, sign out everywhere closing `/privado`; the console's one error is
+the missing `favicon.ico`.
 
 Test discipline in force: every test written under `/write-test` with a contract that
 named the invariant before the body, then watched go red by named mutations — 90-odd
 mutants, all killed, re-run in full after every test edit. The store, ceremony, session
 and handlers went through a mixed-model adversarial panel, and the panel's own
 remediations through a second one. `structure_test.clj` scans `src/` with the reader
-and fails if anything but clojure, ring or this module is required, or if a var root
+and fails if anything but clojure, ring, integrant, next.jdbc, web-base or this module is
+required — the last three each confined to the namespaces allowed to name them — or if a var root
 reaches a `SecureRandom`; neither is observable through behaviour.
 
 ## The three rules that must survive contact with code
 
-**1 · It never knows web-base.** The dependency is `ring/ring-core` and nothing else.
-The moment this module imports the base, it can only be lifted with the base attached,
-which is exactly what made Django's `contrib.auth` impossible to extract and the
-reason this repository is separate. A host wires the two together; neither knows the
-other.
+**1 · The ceremony never knows web-base; the plugin does.** Since 2026-09-29, by the
+user's decision (SPEC §3), auth-base is a web-base plugin and declares it:
+`dev.arkaitz.auth-base.web` ships the standard pages and `testing` walks them. **Only
+those two may name web-base** — `structure_test` says so — so the ceremony, handlers,
+session, stores and facade still run under any Ring host, and the harness proves it.
+What made Django's `contrib.auth` a trap was that nothing of it could be replaced: keep
+every standard view a public function, `:view` replacing the whole, and a state
+overridden by composition, never by an options map.
 
 **2 · The membership test.** Would a bicycle rental and a clinic's appointment book
 need this, unchanged? Both need someone to prove they control an address and stay

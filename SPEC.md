@@ -43,7 +43,9 @@ passes its function to web-base, or to any other Ring application, or to none.
   the host's own migrations — so the sentence above stays true. Three hosts had copied
   the same store by hand, and a store whose single use is proved once beats three that
   were each proved by their author.
-- **Not a web framework.** It does not know web-base exists.
+- **Not a web framework.** It does not know web-base exists — **superseded 2026-09-29**
+  for one namespace, by the user's decision recorded in §3: `dev.arkaitz.auth-base.web`
+  is a web-base plugin, with standard pages. The ceremony still knows nothing of it.
   Amended 2026-09-28: one function reads a key web-base documents. `wrap-revoked` takes
   a request's `:wb/subject` that is not nil as the answer web-base's `:subject-fn`
   already gave, instead of reading the generation a second time — the same class as the
@@ -52,6 +54,27 @@ passes its function to web-base, or to any other Ring application, or to none.
   two reads, correct and slower; nothing would break.
 
 ## 3 · The rule that governs everything here
+
+**Amended 2026-09-29 by the user: auth-base is a web-base plugin.** In their words: "el
+que es independiente de verdad es web-base… los demás son lo más parecido a un plugin
+que puedas hacer", and everything about signing in and out must be "estándar, con
+posibilidad de branding y adecuación de estilos. Un sistema que se usa como un todo en
+cualquier proyecto." Five hosts had written the same five-state view, logout form and
+test walk by hand, with copy hard-coded and styles in one of them only.
+
+So auth-base now declares web-base, and `dev.arkaitz.auth-base.web` ships `plugin` — a
+value web-base 0.11.0's `:plugins` merges as data: the routes with a standard view,
+`/ab/ab.css`, a dictionary of every string, the subject function and the login path —
+plus the view's parts, `sign-out` and `identity`. What the rule below was protecting is
+kept where it still can be: **only `web` and `testing` may name web-base**, a scan says
+so, and the ceremony, handlers, session, stores and facade run under any Ring host, which
+the harness keeps proving. What is given up is the classpath: every consumer now
+receives web-base and what it brings, which every host of the set already had. Nothing
+standard is a cage — every state's view is a public function, `:view` replaces the
+whole, and a host overrides one state by composing — because the Django trap the rule
+below names was a module that could not be replaced, not one that could be installed.
+
+The rule as it stood until then, kept as the record of why it was drawn:
 
 **Dependencies point inward. The host knows the module; the module never knows the
 host.** And, settled 2026-09-09, the sharper corollary that had never been written
@@ -87,18 +110,19 @@ that confines the require and the one that resolves a consumer's real classpath 
 refuses anything nobody decided.
 
 Ring is the lingua franca. A handler, a request map, a session map and a store
-protocol are all this module needs, and every Clojure web application in the world
-speaks them. A web-base host wires it in five lines:
+protocol are all the ceremony needs, and every Clojure web application in the world
+speaks them. A web-base host installs it in one line (since 0.9.0):
 
 ```clojure
 (wb/handler
-  {:routes     (into (auth/routes ceremony auth-config) my-routes)
-   :subject-fn (auth/subject-fn ceremony)
-   :login-path "/entrar"
-   :session    {:key …}})
+  {:plugins [(auth-web/plugin ceremony {:layouts [views/shell-layout]})]
+   :i18n    {:default-locale :en}
+   :session {:key …}
+   :routes  my-routes})
 ```
 
-and a host that has never heard of web-base mounts the same handlers itself. Both
+and a host that has never heard of web-base mounts the same handlers itself, with a
+view of its own. Both
 functions take the ceremony because it is a value the host builds once and holds; the
 names above were written before there was any code and §17 records the correction.
 
@@ -469,7 +493,7 @@ unchanged.
 
 | | |
 |---|---|
-| Depends on `ring/ring-core` only, never on web-base | §3, 2026-09-09 |
+| Depends on `ring/ring-core` only, never on web-base — superseded: a web-base plugin, with only `web` and `testing` naming it | §3, 2026-09-09; 2026-09-29, the user |
 | Integrant is used, not imposed: one optional namespace, one key | §3, 2026-09-22, first host that asked |
 | The ceremony is the contract; the method is an implementation | §6, 2026-09-09 |
 | Storage is a port with an in-memory default | §7, 2026-09-09 |

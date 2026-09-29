@@ -3,12 +3,12 @@
   subject, and nothing else (SPEC §1).
 
   It is a **library you call**. It never calls the host back except through the
-  functions the host hands it, it knows nothing about web-base or any other
-  framework, and its only dependency is `ring/ring-core` — a handler, a request
-  map, a session map and a store protocol, which every Clojure web application
-  in the world already speaks.
+  functions the host hands it. The ceremony needs only Ring — a handler, a request
+  map, a session map and a store protocol — and knows nothing of web-base; the
+  standard pages that make it a web-base plugin live in `dev.arkaitz.auth-base.web`
+  (since 0.9.0), which installs all of the below in one line of `:plugins`.
 
-  A host wires it in one place:
+  Wired by hand, in one place:
 
       (def ceremony
         (auth/ceremony {:store    (auth/in-memory-store {:subjects {\"ada@example.test\" :ada}})

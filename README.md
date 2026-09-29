@@ -8,10 +8,12 @@ It issues a challenge against an identifier, redeems that challenge at most once
 hands back a subject. It establishes the session that carries the subject, and it can
 end that subject's access everywhere. That is the whole of it.
 
-It is a **library you call**, not a framework that calls you, and it **does not know
-web-base exists**. Its dependency is `ring/ring-core` — a handler, a request map, a
-session map and a store protocol, which every Clojure web application already speaks —
-plus Integrant, which only the one optional namespace that ships its key ever loads.
+It is a **library you call**, not a framework that calls you, and it is a
+**[web-base](https://github.com/arkaitz-dev/web-base) plugin** (since 0.9.0): one line
+of web-base's config installs the standard sign-in and sign-out pages, brandable and
+restylable, in English and Spanish. The ceremony underneath needs only Ring — a handler,
+a request map, a session map and a store protocol — and a host without web-base mounts
+its handlers with a view of its own.
 
 ## The two rules
 
@@ -38,11 +40,11 @@ dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
 
 The badge at the top is the version actually published.
 
-`ring/ring-core` and Integrant are the only things that reach your classpath. Not
-reitit, not web-base, not a template engine, not a database driver. Integrant is there
-for the optional key below and costs two jars; if you wire by hand, you call `ceremony`
-yourself and load neither. A test resolves the real classpath a consumer of this library
-gets and refuses any jar that has not been decided by name, with its reason.
+What reaches your classpath is web-base and what it brings (since 0.9.0), `ring-core`,
+Integrant for the optional key below, and `tools.logging` — never a database driver. A
+test resolves the real classpath a consumer of this library gets and refuses any jar
+that has not been decided by name, with its reason. Only `dev.arkaitz.auth-base.web` and
+`.testing` load web-base; another scan says so.
 
 ## What it gives you
 
@@ -59,10 +61,16 @@ gets and refuses any jar that has not been decided by name, with its reason.
 - **A bootstrap list**: identities that exist before any data does, passed in as data.
 - **A store port** with an in-memory implementation, so nothing needs infrastructure.
 - **A `401` with `WWW-Authenticate`**, for a host mounting it behind an API.
+- **Standard pages** as a web-base plugin: sign in, the link sent, spent or refused,
+  the confirmation, sign out and sign out everywhere — every word a dictionary key,
+  every colour a token.
 
-What it does not do: authorise, send mail, persist, render, or know your domain.
+What it does not do: authorise, send mail, persist, or know your domain.
 
 ## A host, in full
+
+Under web-base, `auth-web/plugin` does all of this for you — see the next section. This
+is the ceremony mounted by hand, which is also what the plugin does inside.
 
 ```clojure
 (require '[dev.arkaitz.auth-base :as auth])
@@ -133,23 +141,71 @@ Your stack must have parsed the body — `ring.middleware.params/wrap-params` �
 the POST reads `:form-params`. **CSRF is yours too**: the token lives in the session,
 which belongs to your stack, so your login view emits the field.
 
-## Integration with web-base
-
-[web-base](https://github.com/arkaitz-dev/web-base) knows *that* there is a subject and
-never *how* it came to be one; it receives a function. auth-base is what sits on the
-other side of that function. Neither depends on the other — **you** hold both, and your
-`deps.edn` is where they meet:
+## Installed in web-base: the standard pages
 
 ```clojure
-{:deps {org.clojure/clojure   {:mvn/version "1.12.5"}
-        dev.arkaitz/web-base  {:mvn/version "0.10.0"}  ; the web foundation
-        dev.arkaitz/auth-base {:mvn/version "0.8.1"}}} ; the ceremony
+{:deps {dev.arkaitz/web-base  {:mvn/version "0.11.0"}
+        dev.arkaitz/auth-base {:mvn/version "0.9.0"}}}
 ```
 
-web-base brings reitit-ring, hiccup, ring-jetty-adapter, tools.logging, tempura,
-ring-anti-forgery and integrant. auth-base brings `ring-core`, which web-base already
-had, integrant, which it already had too, and `tools.logging`, likewise. Nothing is
-duplicated and neither library can see the other.
+```clojure
+(require '[dev.arkaitz.auth-base.web :as auth-web])
+
+(wb/handler
+ {:plugins [(auth-web/plugin ceremony {:layouts     [views/shell-layout]
+                                       :revoke-path "/logout/everywhere"})]
+  :i18n    {:default-locale :en}
+  :session {:key …}
+  :routes  my-routes})
+```
+
+That line brings the login routes with the standard view rendered inside your
+`:layouts`, `/ab/ab.css`, a dictionary of every string in English and Spanish, the
+`:subject-fn` and the `:login-path` — each of which your own config overrides. web-base
+merges it as data and calls nothing of it on its own; `(wb/expand config)` shows the
+result. `:i18n :default-locale` is required once a plugin brings a dictionary: the
+language is yours to choose. The plugin takes the handlers' options below, defaulting
+`:login-path` to `/login` and `:rate-limit` to five links per source every fifteen
+minutes (an explicit nil sets none), plus `:layouts`.
+
+Put the identity in your shell's slot, and a signed-in page shows sign out — and sign
+out everywhere, under a `:revoke-path` — while an anonymous one shows a link to sign in:
+
+```clojure
+(shell/page {:request request :identity (auth-web/identity request auth-opts) :content …})
+```
+
+**Branding, lightest first:**
+
+- web-base's `--wb-*` custom properties: the `--ab-*` ones default to them, so a site
+  rebranded once is rebranded here too;
+- `--ab-*` properties and the `ab-*` classes in your own `:stylesheets`, linked after
+  `ab.css`. The markup is `section.ab.ab-state-<state>` with `data-ab-state` (`form`,
+  `sent`, `spent`, `limited`, `confirm`) holding `.ab-title`, `.ab-notice`
+  (`-ok`/`-error`), `.ab-form`, `.ab-label`, `.ab-input`, `.ab-submit` and `.ab-note`;
+  `.ab-sign-out` with `.ab-everywhere`, and `.ab-sign-in`. No inline style, so a CSP's
+  `style-src 'self'` refuses nothing;
+- any string, per locale, in your dictionary: `{:es {:ab {:title "Acceso"}}}` replaces
+  that one and keeps the rest. `:ab/sent-detail` and `:ab/note` are empty until you
+  fill them — where the link went in development, why the answer never says whether an
+  address has an account. The keys are `auth-web/dict`;
+- `:view`, a view of your own for the five states, which may call the standard parts
+  for the states it does not redraw:
+
+```clojure
+(auth-web/plugin ceremony {:view (fn [request state]
+                                   (if (:confirm? state)
+                                     (my-confirm-page request state)
+                                     (auth-web/view request state)))})
+```
+
+`notice`, `sign-in-form` and `confirm-form` are the view's parts, public for the same
+reason.
+
+**Signing out**: `:on-logout (fn [request])` runs before a logout ends the session, while
+`:session/key` still names it — where a host forgets its record of the device.
+`:revoke-path` is a POST that signs the subject out everywhere: `revoke!`, then
+`:on-revoke (fn [request subject])`, then this session ended.
 
 ### Wiring it with Integrant
 
@@ -455,6 +511,9 @@ something to name when there is no local identity at all.
 | `:view` | `(fn [request state])` → a `:body` (required); every state carries `:action` and `:field` |
 | `:login-path` | where the form lives (required) |
 | `:logout-path` | where the logout POST goes (default `/logout`) |
+| `:revoke-path` | a POST that signs the subject out everywhere, landing on `:after-logout` (since 0.9.0; default none) |
+| `:on-logout` | `(fn [request])`, before a logout ends the session (since 0.9.0) |
+| `:on-revoke` | `(fn [request subject])`, after `revoke!` and before this session ends (since 0.9.0) |
 | `:after-login` | where a redeemed link lands (default `/`) |
 | `:after-logout` | where a logout lands (default `:login-path`) |
 | `:field` | the form field holding the identifier (default `identifier`) |
@@ -492,20 +551,26 @@ name, where the one-argument form names this module's session scheme.
 itself: a `clock` the test moves with `advance!`, a `mailbox` with `deliver-into` as
 `:deliver!` and `token-of`/`last-link` to read what was sent, the `recording` store that
 shows what the ceremony asked, and `view-states`, the five states to render your view
-with. It is for tests; nothing on a request path needs it.
+with. Since 0.9.0 it walks the pages as a person does, over web-base's test browser:
+`(abt/sign-in browser "ada@x.test" (abt/mailbox-reader ceremony box))` — login page,
+form, link opened, its button pressed — throwing, with the identifier and where the
+form landed, if no link can be read or the link signs nobody in; then `open-link` and
+`(abt/sign-out b {:everywhere? true :revoke-path "…"})`. Over the JDBC store read the
+token with `#(auth-jdbc/latest-challenge-token ds (auth/normalise ceremony %))`. It is
+for tests; nothing on a request path needs it.
 
 ## The two proofs
 
 ```
 clojure -M:harness [port]    # ring only, no framework, HTML written by hand
-clojure -M:demo    [port]    # the same ceremony wired into web-base
+clojure -M:demo    [port]    # the same ceremony as a web-base plugin
 ```
 
 Both print the link they would have emailed. `harness/` is the acceptance test of SPEC
 §13 — **if it needs anything auth-base does not provide, the seam is in the wrong
 place** — and it names web-base nowhere, which one of its tests asserts by reading its
-own `ns` form. `demo/` is the integration probe, and it is where the five lines above
-come from.
+own `ns` form. `demo/` is the plugin's acceptance test: the standard pages in a host's
+shell, in Spanish, with two sentences of its own over the dictionary.
 
 Two defects in this module's own surface were found by the harness rather than by any
 test, and both are recorded in SPEC §17: a middleware whose arguments were the wrong

@@ -6,6 +6,27 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.9.0 — unreleased
+
+- **Breaking:** auth-base is a web-base plugin (the user's decision of 2026-09-29, SPEC
+  §3): it declares `dev.arkaitz/web-base 0.11.0`, so a consumer receives web-base and
+  what it brings. Only `dev.arkaitz.auth-base.web` and `.testing` load it; the ceremony,
+  handlers, session, stores and facade still run under any Ring host.
+- `dev.arkaitz.auth-base.web`: `plugin`, one line of web-base's `:plugins` installing
+  the login routes with a standard view inside the host's `:layouts`, `/ab/ab.css`, an
+  English and Spanish dictionary of every string, the subject function and the login
+  path; five links per source every fifteen minutes by default. The view and its parts
+  (`view`, `notice`, `sign-in-form`, `confirm-form`), `sign-out` and `identity` for the
+  shell's slot are public. Brand it with `--ab-*`/`--wb-*` properties, the `ab-*`
+  classes, `:ab/` keys in the host's dictionary, or a `:view` of the host's.
+- Handlers: `:revoke-path`, a POST that signs the subject out everywhere; `:on-logout`
+  and `:on-revoke`, for a host's own records of a device. `:logout-path` is now checked
+  like `:login-path`.
+- `testing`: `sign-in`, `open-link`, `sign-out` and `mailbox-reader` walk the pages as a
+  person does; `sign-in` throws, naming the identifier, where a walk would otherwise go
+  on signed out.
+- The jar carries `resources/` (the stylesheet).
+
 ## 0.8.1 — 2026-09-29
 
 - The token encoder is called without reflection: in a native image a sign-in worked
