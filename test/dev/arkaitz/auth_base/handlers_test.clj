@@ -18,7 +18,7 @@
             [dev.arkaitz.auth-base.handlers :as handlers]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.session :as session]
-            [dev.arkaitz.auth-base.support :as support]
+            [dev.arkaitz.auth-base.testing :as abt]
             [clojure.tools.logging.test :as lt]
             [dev.arkaitz.web-base :as wb]
             [dev.arkaitz.web-base.response :as wb-response]
@@ -36,7 +36,7 @@
         log        (atom [])
         deliveries (atom [])
         inner      (store/in-memory {:subjects subjects :clock #(deref clock)})
-        ceremony   (ceremony/ceremony {:store    (support/recording inner log (or forbid #{}))
+        ceremony   (ceremony/ceremony {:store    (abt/recording inner log (or forbid #{}))
                                        (if with-request? :deliver-with-request! :deliver!)
                                        (if with-request?
                                          (fn [id link request] (swap! deliveries conj [id link request]))
@@ -61,7 +61,6 @@
                                 rate-limit   (assoc :rate-limit rate-limit)
                                 keep-session (assoc :keep-session keep-session))))))
 
-(defn- token-of [link] (last (str/split link #"/")))
 
 (defn- post [handler identifier & {:keys [from]}]
   (handler (assoc (mock/request :post "/login")
@@ -72,7 +71,7 @@
   "Issues a link and returns its token."
   [{:keys [issue deliveries]} identifier]
   (post issue identifier)
-  (token-of (second (last @deliveries))))
+  (abt/token-of (second (last @deliveries))))
 
 ;; --- the login page -------------------------------------------------------
 
@@ -201,16 +200,16 @@
           "control: an ordinary submission is accepted")
       (is (= "/login?ab=sent" (get-in ok [:headers "Location"]))
           "control: and lands on the page that says a link went out")
-      (is (= [:put-challenge!] (support/calls log))
+      (is (= [:put-challenge!] (abt/calls log))
           "control: and reached the store, so the empty logs below mean something"))
     (let [longest (str (apply str (repeat 313 "a")) "@x.test")
           at-edge (submit {"identifier" longest})]
       (is (= [320 "/login?ab=sent" [:put-challenge!]]
-             [(count longest) (get-in at-edge [:headers "Location"]) (support/calls log)])
+             [(count longest) (get-in at-edge [:headers "Location"]) (abt/calls log)])
           "control: an identifier as long as the ddl's column, 320, is accepted"))
     (let [padded (str "  " (apply str (repeat 313 "b")) "@x.test")]
       (submit {"identifier" padded})
-      (is (= [322 [:put-challenge!]] [(count padded) (support/calls log)])
+      (is (= [322 [:put-challenge!]] [(count padded) (abt/calls log)])
           "control: what decides is the stored form — 322 as typed, 320 once trimmed, accepted"))
     (doseq [[label form-params] [["an empty field"     {"identifier" ""}]
                                  ["320 as typed and 321 once lower-cased, the form stored"
@@ -245,10 +244,10 @@
         fits   (str (apply str (repeat 303 "a")) "@x.test")
         over   (str (apply str (repeat 304 "a")) "@x.test")]
     (is (= [310 "/login?ab=sent" [:put-challenge!]]
-           [(count fits) (get-in (submit fits) [:headers "Location"]) (support/calls log)])
+           [(count fits) (get-in (submit fits) [:headers "Location"]) (abt/calls log)])
         "control: 310 typed, 320 once the host's rule has run, accepted")
     (is (= [311 "/login" []]
-           [(count over) (get-in (submit over) [:headers "Location"]) (support/calls log)])
+           [(count over) (get-in (submit over) [:headers "Location"]) (abt/calls log)])
         "311 typed, 321 once the host's rule has run: answered as a blank form, the store untouched")
     (is (= [(suffixed fits)] (mapv first @deliveries)) "and the one link went to the stored form")))
 
@@ -319,7 +318,7 @@
                   :headers {"Location" "/login?ab=sent" "Cache-Control" "no-store"}
                   :body ""}
         known    (post issue "known@x.test")
-        known-calls (support/calls log)
+        known-calls (abt/calls log)
         _        (reset! log [])
         unknown  (post issue "unknown@x.test")]
     (is (= 2 (count @deliveries))
@@ -330,7 +329,7 @@
         "neither carries a session, which would be a difference the browser could see")
     (is (= [:put-challenge!] known-calls)
         "the store was asked to record a challenge and nothing else")
-    (is (= known-calls (support/calls log))
+    (is (= known-calls (abt/calls log))
         "and it was asked exactly the same for the unknown address: there is no branch
          on knowledge to time, because there is no question")))
 
@@ -486,12 +485,12 @@
                                           :logout-path "/out"})]
     (is (= ["/login" "/entrar/:token" "/out"] (mapv first routes))
         "the paths are the host's own, and the redemption path comes from the ceremony's link")
-    (is (= [[:get :post] [:get] [:post]]
+    (is (= [[:get :post] [:get :post] [:post]]
            (mapv #(vec (sort (filter #{:get :post :put :patch :delete} (keys (second %))))) routes))
-        "with the methods each one answers")
+        "with the methods each one answers: the link's GET shows the button, its POST redeems")
     (is (= [nil :template nil] (mapv #(:wb/log-path (second %)) routes))
         "and the redemption, whose last segment is the token, asks web-base to log its template, on the route's own data")
-    (is (= [#{:get :post} #{:wb/log-path :get} #{:post}] (mapv #(set (keys (second %))) routes))
+    (is (= [#{:get :post} #{:wb/log-path :get :post} #{:post}] (mapv #(set (keys (second %))) routes))
         "nothing else rides in the route data")
     (testing "it really is data, so a host with no reitit can read it"
       (is (every? vector? routes))
@@ -574,9 +573,10 @@
     (is (= {:ring.middleware.anti-forgery/anti-forgery-token t0 :locale "eu" :planted true} (get @sessions s0))
         "precondition: the anonymous session holds the token, the language and a marker")
     (is (= 303 (:status (post "/login" s0 t0 {"identifier" "ada@x.test"}))) "the link was asked for")
-    (let [link   (second (last @deliveries))
-          opened (app (-> (mock/request :get (subs link (count "https://x.test")))
-                          (mock/header "Cookie" (str "ring-session=" s0))))
+    (let [link   (subs (second (last @deliveries)) (count "https://x.test"))
+          shown  (app (-> (mock/request :get link) (mock/header "Cookie" (str "ring-session=" s0))))
+          _      (is (= 200 (:status shown)) "witness: opening the link shows the button")
+          opened (post link s0 (wbt/csrf-token shown) {})
           s1     (session-cookie-of opened)]
       (is (= "/home" (get-in opened [:headers "Location"])) "witness: the redemption signed in")
       (is (and (some? s1) (not= s0 s1)) "and rotated the id")
@@ -604,7 +604,7 @@
       (is (= :eu (:wb/locale received)) "what the base put on the request reached the delivery")
       (is (identical? request received) "the request itself, not a copy")
       (is (= ["ada@x.test" true] [identifier (str/starts-with? link "https://x.test/entrar/")]) "with the identifier and the link"))
-    (is (= [:put-challenge!] (support/calls log)) "and the request made issue! ask the store nothing more")))
+    (is (= [:put-challenge!] (abt/calls log)) "and the request made issue! ask the store nothing more")))
 
 (deftest under-web-base-a-redemption-logs-its-route-and-never-its-token
   ;; The route data asks web-base to log the redemption by its template; this is where
@@ -620,16 +620,155 @@
                                 :session    {:store (memory/memory-store (atom {}))}
                                 :csrf       false})
         _          (app (-> (mock/request :post "/login" {"identifier" "ada@x.test"})))
-        token      (token-of (second (last @deliveries)))
+        token      (abt/token-of (second (last @deliveries)))
         access     (fn [] (->> (lt/the-log)
                                (filter #(= 'dev.arkaitz.web-base.log (ns-name (:logger-ns %))))
                                (mapv #(str/replace (:message %) #"\d+ms$" "<n>ms"))))]
     (is (string? token) "witness: a link was issued")
     (lt/with-log
-      (is (= 303 (:status (app (mock/request :get (str "/entrar/" token))))) "witness: the redemption answered")
-      (is (= 303 (:status (app (mock/request :get (str "/entrar/" token))))) "witness: and the spent one too")
+      (is (= 200 (:status (app (mock/request :get (str "/entrar/" token))))) "witness: opening the link showed the button")
+      (is (= 303 (:status (app (mock/request :post (str "/entrar/" token))))) "witness: the redemption answered")
+      (is (= 303 (:status (app (mock/request :post (str "/entrar/" token))))) "witness: and the spent one too")
       (app (mock/request :get "/login"))
-      (is (= ["GET /entrar/:token 303 <n>ms" "GET /entrar/:token 303 <n>ms" "GET /login 200 <n>ms"] (access))
-          "the redemption is logged by its template, used or spent; the login page, unmarked, by its path")
+      (is (= ["GET /entrar/:token 200 <n>ms" "POST /entrar/:token 303 <n>ms" "POST /entrar/:token 303 <n>ms" "GET /login 200 <n>ms"] (access))
+          "the link is logged by its template, shown, used or spent; the login page, unmarked, by its path")
       (is (not (str/includes? (pr-str (mapv (juxt :message #(some-> % :throwable ex-data)) (lt/the-log))) token))
           "and the token reaches no line"))))
+
+(deftest under-web-base-a-refused-page-is-returned-to-through-the-real-session--which-keeps-its-token
+  (let [box      (abt/mailbox)
+        ceremony (ceremony/ceremony {:store    (store/in-memory {:subjects {"ada@x.test" {:id 1}}})
+                                     :deliver! (abt/deliver-into box)
+                                     :link     {:base-url "https://x.test" :redeem-path "/entrar"}})
+        sessions (atom {})
+        app      (wb/handler
+                  {:routes     (into (handlers/routes ceremony {:view        (fn [r _] [:form (security/csrf-field r)])
+                                                                :login-path  "/login"
+                                                                :after-login "/home"})
+                                     [["/home" {:get {:handler (fn [_] (wb-response/ok [:p "home"]))}}]
+                                      ["/orgs/:id" {:wb/gate wb/subject-present? :get {:handler (fn [_] (wb-response/ok [:p "org"]))}}]])
+                   :subject-fn (session/subject-fn ceremony)
+                   :login-path "/login"
+                   :session    {:store (memory/memory-store sessions)}})
+        with     (fn [request sid] (cond-> request sid (mock/header "Cookie" (str "ring-session=" sid))))
+        page0    (app (mock/request :get "/login"))
+        s0       (session-cookie-of page0)
+        t0       (wbt/csrf-token page0)
+        refused  (app (with (mock/request :get "/orgs/7?tab=a") s0))
+        login    (get-in refused [:headers "Location"])]
+    (is (and (some? s0) (some? t0)) "witness: an anonymous session holding a token")
+    (is (= "/login?next=%2Forgs%2F7%3Ftab%3Da" login) "witness: the gate named the page it refused")
+    (is (= 200 (:status (app (with (mock/request :get login) s0)))) "the login page, with next")
+    (is (= {:ring.middleware.anti-forgery/anti-forgery-token t0 :ab/return-to "/orgs/7?tab=a"} (get @sessions s0))
+        "the session remembers the page and keeps what it held — its CSRF token first of all")
+    (is (= 303 (:status (app (with (mock/request :post "/login" {"identifier" "ada@x.test" "__anti-forgery-token" t0}) s0))))
+        "so the form still posts with the token the page gave")
+    (let [link   (subs (abt/last-link box "ada@x.test") (count "https://x.test"))
+          shown  (app (with (mock/request :get link) s0))
+          opened (app (with (mock/request :post link {"__anti-forgery-token" (wbt/csrf-token shown)}) s0))]
+      (is (= "/orgs/7?tab=a" (get-in opened [:headers "Location"])) "and the sign-in lands on the page, not on :after-login"))))
+
+;; --- the confirmation page, and returning where the person was going ------------------
+
+(deftest opening-a-link-shows-one-button-and-spends-nothing--the-post-redeems
+  (let [{:keys [confirm redeem log views] :as f} (fixture {:subjects {"ada@x.test" {:id 1}}})
+        token (issued! f "ada@x.test")
+        uri   (str "/entrar/" token)
+        _     (reset! log [])
+        shown (confirm (mock/request :get uri))]
+    (is (= [] (abt/calls log)) "the GET asked the store nothing: a scanner's fetch spends no link")
+    (is (= 200 (:status shown)) "a page")
+    (is (= (str "<page" (pr-str {:confirm? true :action uri :field "identifier"}) ">") (:body shown))
+        "the view's fifth state, posting back to the link's own address")
+    (is (= {"Referrer-Policy" "no-referrer" "Cache-Control" "no-store"}
+           (select-keys (:headers shown) ["Referrer-Policy" "Cache-Control"]))
+        "a page that carries the token sends no Referer and is not cached")
+    (is (not (contains? shown :session)) "and touches no session")
+    (is (= "/home" (get-in (redeem (mock/request :post uri)) [:headers "Location"])) "the POST redeems")
+    (reset! log [])
+    (reset! views 0)
+    (doseq [uri ["/entrar/" "/entrar/%22%3E%3Cscript%3E" "/entrar/short"
+                 ;; The length of a token, with a character mint never uses.
+                 (str "/entrar/" (apply str (repeat 40 "a")) "%3E")]]
+      (is (= {:status 303 :headers {"Location" "/login?ab=spent" "Cache-Control" "no-store"} :body ""}
+             (confirm (mock/request :get uri)))
+          (str uri ": a link with no token, or one mint could not have made, answers as a spent one")))
+    (is (= [0 []] [@views (abt/calls log)]) "without rendering the view or asking the store")))
+
+(deftest a-refused-page-is-returned-to-after-sign-in--and-only-a-local-one
+  (let [{:keys [form redeem] :as f} (fixture {:subjects {"ada@x.test" {:id 1}}})
+        stored  (fn [next] (get-in (form (assoc (mock/request :get "/login") :query-string (str "next=" next)))
+                                   [:session :ab/return-to]))
+        landed  (fn [session]
+                  (let [token (issued! f "ada@x.test")]
+                    (get-in (redeem (assoc (mock/request :post (str "/entrar/" token)) :session session)) [:headers "Location"])))]
+    (is (= "/orgs/7?tab=a+b" (stored "%2Forgs%2F7%3Ftab%3Da%2Bb")) "the login page remembers the page the gate named, as web-base encodes it")
+    (is (= [false true] (map #(contains? (form (assoc (mock/request :get "/login") :query-string "next=%2Fa" :session %)) :session)
+                             [{:ab/subject {:id 1}} {:ab/generation 0 :x 1}]))
+        "but never writes it into a session that names a subject — live, or revoked and wrap-revoked's to delete")
+    (is (= ["/a" (str "/" (apply str (repeat 2047 "a")))] [(stored "%2Fa") (stored (str "%2F" (apply str (repeat 2047 "a"))))])
+        "control: a local path is kept, up to 2048 characters")
+    (doseq [bad ["%2F%2Fevil.test" "%2F%5Cevil.test" "https%3A%2F%2Fevil.test" "evil" "%2Fa%0D%0ASet-Cookie%3Ax" "%2Fa%20b"
+                 ;; A tab alone, which a browser strips: `/\t/evil.test` would be `//evil.test`.
+                 "%2F%09%2Fevil.test"
+                 ;; A control character that is no whitespace.
+                 "%2Fa%00b" "%2Fa%1Bb" "%2Fa%7Fb"
+                 ;; C1 and the Unicode separators, as UTF-8.
+                 "%2Fa%C2%9Bb" "%2Fa%E2%80%A8b" "%2Fa%E2%80%A9b"
+                 (str "%2F" (apply str (repeat 2048 "a")))]]
+      (is (nil? (stored bad)) (str "but never another site, a scheme, a relative path, a header or a space: " bad)))
+    (is (= "/orgs/7" (landed {:ab/return-to "/orgs/7"})) "the redemption returns there")
+    (is (= "/home" (landed {:ab/return-to "//evil.test"})) "a planted session's foreign address is refused again, at the redirect")
+    (is (= "/home" (landed {})) "and without one, :after-login")
+    (let [kept (fixture {:subjects {"ada@x.test" {:id 1}} :keep-session #{:locale}})
+          token (issued! kept "ada@x.test")
+          r ((:redeem kept) (assoc (mock/request :post (str "/entrar/" token)) :session {:ab/return-to "/x" :locale "eu"}))]
+      (is (= "/x" (get-in r [:headers "Location"])) "witness: returned")
+      (is (= {:locale "eu" :ab/subject {:id 1} :ab/generation 0} (:session r))
+          "and the signed-in session does not carry the return address past the sign-in"))))
+
+(deftest the-limit-counts-one-source-per-address-spelling-and-per-ipv6-64
+  (let [{:keys [issue]} (fixture {:subjects {"ada@x.test" {:id 1}} :rate-limit {:limit 1 :window-ms 60000}})
+        ask (fn [addr] (:status (post issue "ada@x.test" :from addr)))]
+    (is (= [303 429] [(ask "2001:db8:1:2:aaaa::1") (ask "2001:db8:1:2:bbbb::9")])
+        "two addresses in one /64 are one source")
+    (is (= 303 (ask "2001:db8:1:3::1")) "control: the next /64 is another")
+    (is (= [303 429 429] [(ask "::1") (ask "0:0:0:0:0:0:0:1") (ask "[::1]")]) "three spellings of one address are one")
+    (is (= [303 429] [(ask "203.0.113.7") (ask "203.0.113.7")]) "an IPv4 address as it is")
+    (is (= [303 429] [(ask "::ffff:198.51.100.2") (ask "198.51.100.2")]) "an IPv4-mapped address is its IPv4")
+    (is (= [303 303] [(ask "not-an-address") (ask "other-thing")]) "anything else is counted as it came")
+    (let [{:keys [issue]} (fixture {:subjects {"ada@x.test" {:id 1}} :rate-limit {:limit 1 :window-ms 60000}})
+          ask (fn [addr] (:status (post issue "ada@x.test" :from addr)))]
+      (is (= [303 303 303] [(ask "localhost") (ask "127.0.0.1") (ask "::1")])
+          "and never looked up: a name that resolves to one of the others is still a source of its own"))))
+
+(deftest an-identifier-with-a-control-character-answers-the-ordinary-page
+  (let [{:keys [issue deliveries log]} (fixture {:subjects {"ada@x.test" {:id 1}}})]
+    (doseq [id ["victim@x.test\r\nBcc: a@evil.test" "a@x.test\u0000" "a\tb@x.test" "a@x.test\u0085" "a@x.test\u009b"
+                "a@x.test\u2028b" "a@x.test\u2029"]]
+      (reset! log [])
+      (is (= {:status 303 :headers {"Location" "/login" "Cache-Control" "no-store"} :body ""} (post issue id))
+          (str (pr-str id) ": the blank form, never a 500"))
+      (is (= [] (abt/calls log)) "and nothing was stored"))
+    (is (= [] @deliveries) "nor delivered")))
+
+(deftest a-rate-limit-function-may-answer-a-map--and-then-its-retry-after-is-the-header
+  (let [{:keys [ceremony]} (fixture {})
+        issue-with (fn [f] (:issue (handlers/handlers ceremony {:view (fn [_ _] "<p>") :login-path "/login" :rate-limit f})))]
+    (is (= "3" (get-in (post (issue-with (fn [_] {:allowed? false :retry-after-ms 2001})) "a@x.test") [:headers "Retry-After"]))
+        "a map's :retry-after-ms becomes Retry-After, rounded up")
+    (is (= 303 (:status (post (issue-with (fn [_] {:allowed? true})) "a@x.test"))) "a map that allows")
+    (is (thrown-with-msg? ExceptionInfo #"answered a map without a boolean :allowed\?"
+                          (post (issue-with (fn [_] {:retry-after-ms 5})) "a@x.test"))
+        "a map without :allowed? is refused, never read as a yes")
+    (doseq [bad ["5" -1 1.5]]
+      (is (thrown-with-msg? ExceptionInfo #"with a :retry-after-ms that is not a whole number of milliseconds"
+                            (post (issue-with (fn [_] {:allowed? false :retry-after-ms bad})) "a@x.test"))
+          (str "a :retry-after-ms of " (pr-str bad) " is refused, never a 500 or a negative header")))
+    (is (= [429 nil] ((juxt :status #(get-in % [:headers "Retry-After"])) (post (issue-with (fn [_] {:allowed? false})) "a@x.test")))
+        "control: a refusal that names no delay carries none")
+    (is (= [429 "0"] ((juxt :status #(get-in % [:headers "Retry-After"]))
+                      (post (issue-with (fn [_] {:allowed? false :retry-after-ms 0})) "a@x.test")))
+        "and one that names none left to wait says 0, which the header allows")
+    (is (nil? (get-in (post (issue-with (constantly false)) "a@x.test") [:headers "Retry-After"]))
+        "control: a boolean refusal still carries no invented delay")))

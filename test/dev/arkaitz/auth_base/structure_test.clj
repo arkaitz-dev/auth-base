@@ -297,6 +297,35 @@
         (str "SPEC §14: only " jdbc-exempt-ns " may name next.jdbc, and nothing may require that"
              " namespace — the facade and the Integrant key included"))))
 
+(defn- testing-refs
+  "Every place `text` names the testing namespace: a require, a prefix list's
+  `[dev.arkaitz.auth-base [testing …]]`, or a qualified symbol."
+  [text]
+  (let [forms (tree-seq coll? seq (forms-in text))]
+    (vec (concat
+          (filter #(and (symbol? %) (let [s (str %)] (or (= s "dev.arkaitz.auth-base.testing")
+                                                         (str/starts-with? s "dev.arkaitz.auth-base.testing/"))))
+                  forms)
+          (for [f forms
+                :when (and (sequential? f) (= 'dev.arkaitz.auth-base (first f))
+                           (some #(or (= 'testing %) (and (sequential? %) (= 'testing (first %)))) (rest f)))]
+            'dev.arkaitz.auth-base.testing)))))
+
+(deftest no-namespace-of-src-names-the-testing-one
+  (testing "positive controls"
+    (is (= '[dev.arkaitz.auth-base.testing] (testing-refs "(ns x (:require [dev.arkaitz.auth-base.testing :as t]))")) "a plain require")
+    (is (= '[dev.arkaitz.auth-base.testing] (testing-refs "(ns x (:require [dev.arkaitz.auth-base [testing :as t]]))")) "a prefix list")
+    (is (= '[dev.arkaitz.auth-base.testing/clock] (testing-refs "(ns x) (def c (dev.arkaitz.auth-base.testing/clock 0))")) "a qualified call"))
+  (testing "controls: what must not fire"
+    (is (= [] (testing-refs "(ns x (:require [clojure.test :refer [testing]]))")) "clojure.test's own macro")
+    (is (= [] (testing-refs "(ns x (:require [dev.arkaitz.auth-base.store :as store]))")) "a sibling namespace"))
+  (let [files (source-files (src-root))]
+    (is (contains? files "dev/arkaitz/auth_base/testing.clj") "precondition: the testing namespace is in src, where it ships")
+    (is (= [] (vec (for [[path file] (sort (dissoc files "dev/arkaitz/auth_base/testing.clj"))
+                         ref         (testing-refs (slurp file))]
+                     [path ref])))
+        "it is for a host's tests: nothing on a request path may load it")))
+
 (declare consumer-classpath)
 
 (defn- loading-report

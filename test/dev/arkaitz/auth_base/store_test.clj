@@ -136,11 +136,11 @@
                "green here would have been the wrong signal, not a passing test")))))
 
 (deftest take-challenge!-is-single-use-while-the-store-is-written-by-others
-  ;; The five operations share one atom, so atomicity is not a property of
+  ;; The seven operations share one atom, so atomicity is not a property of
   ;; `take-challenge!` alone: any other writer that reads the state and writes
   ;; it back outside a single compare-and-set puts a consumed challenge back.
-  ;; Racing takes against takes cannot see that. This races them against puts
-  ;; and bumps.
+  ;; Racing takes against takes cannot see that. This races them against puts,
+  ;; bumps and the drops a revocation makes.
   (let [store       (store/in-memory {:clock (constantly 1000)})
         writers     16
         mixed-rounds 200
@@ -149,17 +149,20 @@
       (when (< round mixed-rounds)
         (let [token   (str "mixed-" round)
               others  (mapv #(str "other-" round "-" %) (range writers))
-              subject (fn [i] (keyword (str "subject-" round "-" i)))]
+              subject (fn [i] (keyword (str "subject-" round "-" i)))
+              doomed  (fn [i] (str "doomed-" round "-" i "@x"))]
           (store/put-challenge! store token "racer@x" 9999)
+          (doseq [i (range writers)] (store/put-challenge! store (str "doomed-token-" round "-" i) (doomed i) 9999))
           (let [{:keys [parked? returned? overlaps values]}
                 (race (concat (repeat 32 [:take #(store/take-challenge! store token)])
                               (map (fn [other] [:put #(store/put-challenge! store other "o@x" 9999)]) others)
-                              (map (fn [i] [:bump #(store/bump-generation! store (subject i))]) (range writers))))]
+                              (map (fn [i] [:bump #(store/bump-generation! store (subject i))]) (range writers))
+                              (map (fn [i] [:drop #(store/drop-challenges! store [(doomed i)])]) (range writers))))]
             (is parked?   (str "every racer reached the gate, round " round))
             (is returned? (str "every racer returned within the deadline, round " round))
             ;; Only a take that met another kind of writer counts. Two puts
             ;; overlapping each other say nothing about the take path.
-            (when (some #{#{:take :put} #{:take :bump}} overlaps) (swap! interleaved inc))
+            (when (some #{#{:take :put} #{:take :bump} #{:take :drop}} overlaps) (swap! interleaved inc))
             (is (= [{:ab/identifier "racer@x" :ab/expires-at 9999}]
                    (filterv #(= "racer@x" (:ab/identifier %)) values))
                 (str "exactly one racer took the contested challenge, round " round))
@@ -170,9 +173,11 @@
                 (str "and no concurrent put was lost, round " round))
             (is (= (repeat writers 1) (map #(store/generation store (subject %)) (range writers)))
                 (str "and no concurrent bump was lost, round " round))
+            (is (= (repeat writers nil) (map #(store/take-challenge! store (str "doomed-token-" round "-" %)) (range writers)))
+                (str "and every concurrent drop took its row, round " round))
             (when (and parked? returned?) (recur (inc round)))))))
     (is (pos? @interleaved)
-        (str "some round had a take in flight at the same instant as a put or a bump — "
+        (str "some round had a take in flight at the same instant as a put, a bump or a drop — "
              "two puts overlapping each other would not count. Zero over " mixed-rounds
              " rounds means the takes never met another writer, so this run says "
              "nothing about the atom they share"))))
@@ -301,3 +306,19 @@
         "a live challenge comes back with its expiry alongside its identifier")
     (is (nil? (store/take-challenge! store "alive"))
         "and is consumed too")))
+
+
+(deftest the-in-memory-store-names-a-subjects-identifiers-and-drops-exactly-their-challenges-counting-them
+  (let [st (store/in-memory {:subjects {"ada@x.test" {:id 1} "ada@y.test" {:id 1} "bo@x.test" {:id 2}}
+                             :clock (constantly 0)})
+        rows #(set (keys (:challenges @(.-state st))))]
+    (doseq [[t id] [["t1" "ada@x.test"] ["t2" "ada@x.test"] ["t3" "ada@y.test"] ["t4" "bo@x.test"] ["t5" "Ada@X.test"]]]
+      (store/put-challenge! st t id 9999))
+    (is (= [["ada@x.test" "ada@y.test"] ["bo@x.test"] []]
+           (mapv #(vec (store/identifiers-of st %)) [{:id 1} {:id 2} {:id 3}]))
+        "every identifier of a subject, and none for a subject with none")
+    (is (= 3 (store/drop-challenges! st ["ada@x.test" "ada@y.test" "nobody@x.test"])) "three rows, counted as rows")
+    (is (= #{"t4" "t5"} (rows)) "another subject's and a case-different one stay")
+    (is (= [0 0] [(store/drop-challenges! st ["ada@x.test"]) (store/drop-challenges! st [])]) "nothing left is 0")
+    (is (= 1 (store/drop-challenges! st ["bo@x.test"])) "one more")
+    (is (= #{"t5"} (rows)) "and only the named one went")))

@@ -2,15 +2,18 @@
   "Ring handlers over the ceremony, and the same handlers as reitit route data
   for a host that wants them mounted rather than wired.
 
-  The host supplies **one** view. It is called with the request and one of four
-  states — `{}`, `{:sent? true}`, `{:spent? true}`, `{:limited? true}` — and returns
+  The host supplies **one** view. It is called with the request and one of five
+  states — `{}`, `{:sent? true}`, `{:spent? true}`, `{:limited? true}`, `{:confirm? true}`
+  — and returns
   whatever that host's renderer accepts as a `:body`: Hiccup under web-base, a string
   under plain Ring. That is the whole of what this module knows about pages.
   `:limited?` is the sign-in form refused by the rate limit, answered with status 429
   and the page, so the person sees the form and a reason rather than a browser's own
-  error page.
+  error page. `:confirm?` is what opening a link shows: one button, a form posting to
+  `:action`, which is the link's own address (since 0.8.0).
 
-  Every state also carries `:action`, the path the form must post to, and `:field`, the
+  Every state also carries `:action`, the path the form must post to — the login path,
+  or under `:confirm?` the link's address — and `:field`, the
   name its identifier input must have — the `:login-path` and `:field` these handlers
   were given. A view that spells them itself can disagree with the configuration, and
   the disagreement is silent: the form posts where nothing listens, or the POST finds
@@ -18,11 +21,16 @@
 
   Three details are security, not ergonomics:
 
-  **The redemption never renders.** A link opened from a page carries its URL to
-  whatever that page loads next, so a token in a `Referer` reaches every third
-  party the landing page touches. The redemption answers `303` and nothing
-  else, always, and says `Referrer-Policy: no-referrer` on its own so a host
-  without web-base's headers is no worse off.
+  **No GET redeems, and the page that carries the token sends no Referer.** Opening a
+  link shows a page with one button (`:confirm?`), which posts back to the link's own
+  address; only that POST redeems, and a host's CSRF protection is what makes it
+  somebody's own click (since 0.8.0: a GET used to redeem, so a mail scanner spent
+  links, and an attacker's link opened in a victim's browser signed the victim in as the
+  attacker). A link opened from a page carries its URL to whatever that page loads
+  next, so a token in a `Referer` would reach every third party the landing page
+  touches: the confirmation page and the redemption both say
+  `Referrer-Policy: no-referrer` and `no-store`, and the redemption answers `303` and
+  nothing else.
 
   **The token is read from the URI**, not from a router's path parameters. It
   means a host mounts these handlers under any router or none, and it means
@@ -35,6 +43,7 @@
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.rate-limit :as rate-limit]
             [dev.arkaitz.auth-base.session :as session]
+            [dev.arkaitz.auth-base.token :as token]
             [ring.util.codec :as codec]
             [ring.util.response :as response]))
 
@@ -59,6 +68,22 @@
   the host's stack `wrap-params` sits."
   [request]
   (get (some-> (:query-string request) codec/form-decode) "ab"))
+
+(defn- local-path
+  "`p` when it is a path of this site — one leading `/`, not `//` or `/\\`, no control
+  character, space or backslash, bounded — and nil otherwise. What a sign-in returns to
+  came from a query string anybody can write, and `//evil.test` is another site's
+  address: this check sits where the Location is written, so no host can forget it."
+  [p]
+  (when (and (string? p) (<= 1 (count p) 2048) (str/starts-with? p "/") (not (str/starts-with? p "//"))
+             (not (re-find #"[\\\s\p{Cc}\u2028\u2029]" p)))
+    p))
+
+(defn- next-of
+  "The page a refused navigation asked for, as web-base's gate names it: `next` in the
+  login page's query, read from the query string as `flag` is."
+  [request]
+  (local-path (get (some-> (:query-string request) codec/form-decode) "next")))
 
 (defn- state-of [request]
   (case (flag request)
@@ -91,9 +116,44 @@
   (cond
     (nil? rate-limit) (constantly {:allowed? true})
     (map? rate-limit) (rate-limit/fixed-window-decider (merge {:clock (:clock ceremony)} rate-limit))
-    (ifn? rate-limit) (fn [key] {:allowed? (rate-limit key)})
+    ;; A host's function may answer as `fixed-window-decider` does, a map, and then its
+    ;; `:retry-after-ms` reaches the header. A map is truthy on every answer, so one
+    ;; without a boolean `:allowed?` is refused rather than read as a yes.
+    (ifn? rate-limit) (fn [key]
+                        (let [answer (rate-limit key)]
+                          (if (map? answer)
+                            (if (and (boolean? (:allowed? answer))
+                                     (or (nil? (:retry-after-ms answer)) (nat-int? (:retry-after-ms answer))))
+                              answer
+                              (throw (ex-info (str "auth-base handlers: a :rate-limit function answered a map"
+                                                   " without a boolean :allowed?, or with a :retry-after-ms that is"
+                                                   " not a whole number of milliseconds")
+                                              {:config-key [:rate-limit]})))
+                            {:allowed? answer})))
     :else (fail! ":rate-limit must be a map of options or a function of one key"
                  [:rate-limit] rate-limit)))
+
+(defn- source-key
+  "The key a request's source is counted under: its address as one spelling —
+  `::1`, `0:0:0:0:0:0:0:1` and `[::1]` are one source — and an IPv6 address by its /64,
+  the smallest block a subscriber is given, or anyone could take a fresh bucket for
+  each of the 18 quintillion addresses theirs holds. Many are handed a /56 or a /48,
+  which this still counts as 256 or 65 536 sources: it bounds the abuse, it does not
+  end it. Only a literal is ever parsed, so no name
+  is looked up; anything else is counted as it came."
+  [remote-addr]
+  (let [addr (some-> remote-addr str (str/replace #"^\[|\]$" ""))]
+    (or (when (and addr (re-matches #"[0-9A-Fa-f:.]+" addr) (str/includes? addr ":"))
+          (try
+            (let [bytes (.getAddress (java.net.InetAddress/getByName addr))]
+              (if (= 4 (alength bytes))
+                (.getHostAddress (java.net.InetAddress/getByAddress bytes))
+                (str (str/join ":" (map #(format "%x" (bit-or (bit-shift-left (bit-and (aget bytes %) 0xff) 8)
+                                                              (bit-and (aget bytes (inc %)) 0xff)))
+                                        [0 2 4 6]))
+                     "::/64")))
+            (catch java.net.UnknownHostException _ nil)))
+        addr)))
 
 (defn- whole-seconds
   "Rounded up, so a client that waits exactly this long finds the window open. By
@@ -116,7 +176,7 @@
   contract and refuses, this one decides what to render, and folding them
   together would make a page's wording a reason to loosen a library's rule."
   [v]
-  (and (string? v) (not (str/blank? v))))
+  (and (string? v) (not (str/blank? v)) (not (re-find #"[\p{Cc}\u2028\u2029]" v))))
 
 (defn- fits?
   "Whether `identifier`, normalised as the ceremony will store it, is within
@@ -128,7 +188,8 @@
   (<= (count (ceremony/normalise ceremony identifier)) max-identifier-length))
 
 (defn handlers
-  "The four handlers, as a map. Mount them yourself, or hand the same options
+  "The five handlers, as a map — the redemption path's GET is `:confirm`, its POST
+  `:redeem`. Mount them yourself, or hand the same options
   to `routes`.
 
     :view          (fn [request state]) → a `:body` (required); every state
@@ -199,7 +260,16 @@
 
      :form
      (fn [request]
-       (no-store (response/response (render request (state-of request)))))
+       (let [page (no-store (response/response (render request (state-of request))))]
+         ;; Remembered in the session the sign-in continues in, so the redemption can
+         ;; return there: an `:ab/` key, which `:keep-session` never carries past it.
+         ;; Never in a session that already names a subject: a live one has nowhere
+         ;; to be sent, and a revoked one is `wrap-revoked`'s to delete — written
+         ;; back here, it would outlive its revocation until it expired. The cost, accepted:
+         ;; a revoked visitor sent here by the gate lands on `:after-login`, not the page.
+         (if-let [back (when-not (contains? (:session request) :ab/subject) (next-of request))]
+           (assoc page :session (assoc (:session request) :ab/return-to back))
+           page)))
 
      :issue
      (fn [request]
@@ -207,7 +277,7 @@
        ;; answer differently for one that somebody had just asked about, and
        ;; would let anyone lock a known user out of their own login by spending
        ;; their allowance.
-       (let [{:keys [allowed? retry-after-ms]} (decide (:remote-addr request))]
+       (let [{:keys [allowed? retry-after-ms]} (decide (source-key (:remote-addr request)))]
          (if-not allowed?
            (cond-> (response/status (response/response (render request {:limited? true})) 429)
              retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))
@@ -226,13 +296,30 @@
              ;; the empty form does not.
              blank)))))
 
+     :confirm
+     ;; What a GET of the link answers: a page with one button, which posts back to the
+     ;; same address. A GET consumes nothing — a mail scanner that fetches every link
+     ;; used to spend it before its reader clicked — and nobody is signed in by a link
+     ;; they did not press a button on: an attacker's own link, sent to a victim, no
+     ;; longer signs the victim in as the attacker. The page carries the token in its
+     ;; address, so it sends no Referer, and is never cached. A token `mint` could not
+     ;; have made is a spent link here too, so the page never echoes an arbitrary path.
+     (fn [request]
+       (if (some-> (token-of redeem-path (:uri request)) token/well-formed?)
+         (-> (response/response (view request {:confirm? true :action (:uri request) :field field}))
+             (response/header "Referrer-Policy" "no-referrer")
+             no-store)
+         spent))
+
      :redeem
      (fn [request]
        (let [subject (some->> (token-of redeem-path (:uri request))
                               (ceremony/redeem! ceremony))]
          (-> (if (some? subject)
                (session/establish ceremony
-                                  (cond-> (response/redirect after-login :see-other)
+                                  (cond-> (response/redirect (or (local-path (get-in request [:session :ab/return-to]))
+                                                                 after-login)
+                                                             :see-other)
                                     (seq keep-session) (assoc :session (select-keys (:session request) keep-session)))
                                   subject)
                spent)
@@ -248,11 +335,11 @@
   `(into (auth/routes ceremony opts) my-routes)`. This is data — vectors and
   maps — and costs no dependency: reitit is the host's, not this module's."
   [ceremony opts]
-  (let [{:keys [paths form issue redeem logout]} (handlers ceremony opts)]
+  (let [{:keys [paths form issue confirm redeem logout]} (handlers ceremony opts)]
     [[(:login paths)  {:get {:handler form} :post {:handler issue}}]
      ;; The token is the path's last segment: web-base 0.9.0 and later log this route by
      ;; its template instead. An earlier web-base, or any other reitit host, ignores it.
-     [(:redeem paths) {:wb/log-path :template :get {:handler redeem}}]
+     [(:redeem paths) {:wb/log-path :template :get {:handler confirm} :post {:handler redeem}}]
      [(:logout paths) {:post {:handler logout}}]]))
 
 (defn unauthorized

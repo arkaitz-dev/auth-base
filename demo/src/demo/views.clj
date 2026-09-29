@@ -29,10 +29,17 @@
 
 (defn login
   "The one view auth-base asks the host for. It is handed the request and one
-  of four states, and returns Hiccup — which web-base renders through the
+  of five states, and returns Hiccup — which web-base renders through the
   layouts above, without auth-base knowing either of them exists. The form's
-  target and its input's name come from the state, never spelt here."
-  [request {:keys [sent? spent? limited? action field]}]
+  target and its input's name come from the state, never spelt here. Opening a link
+  shows `:confirm?`: one button, whose POST — carrying this session's CSRF token — is
+  what signs somebody in."
+  [request {:keys [sent? spent? limited? confirm? action field]}]
+  (if confirm?
+    (list [:h2 "Entrar"]
+          [:form {:method "post" :action action}
+           (security/csrf-field request)
+           [:button {:type "submit"} "Entrar"]])
   (list
    [:h2 "Entrar"]
    (when sent?
@@ -50,7 +57,7 @@
     " "
     [:button {:type "submit"} "Enviar enlace"]]
    [:p [:small "La respuesta es la misma se conozca o no la dirección: si no lo fuera, "
-        "esta página diría quién tiene cuenta."]]))
+        "esta página diría quién tiene cuenta."]])))
 
 (defn home [request]
   (list

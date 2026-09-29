@@ -6,6 +6,34 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.8.0 — unreleased
+
+- **Breaking:** opening a magic link no longer signs in. The GET renders the view in a
+  fifth state, `{:confirm? true}`, whose form posts to the link, and only that POST —
+  behind the host's CSRF — redeems. A mail gateway's scanner that fetches the link
+  spends nothing, and a page elsewhere can no longer sign a visitor in as the attacker
+  who requested it. A view that ignores the new state renders its ordinary form there,
+  posting to the link, so its button still signs in — give it the one button. The
+  page carries the token in its address, so it is `no-store` and
+  `Referrer-Policy: no-referrer`.
+- **Breaking:** `revoke!` also drops the subject's links not used yet, so a link issued
+  before a revocation no longer signs in after it. A store must implement the new
+  `store/Challenges` protocol (`identifiers-of`, `drop-challenges!`), checked at
+  construction; the in-memory and JDBC stores do. The JDBC `ddl` gains an index on
+  `login_challenge(identifier)`: add it as a migration.
+- **Breaking:** an identifier carrying a control character is refused by `issue!`, and
+  the form answers it as any unusable input — it would have reached `deliver!`, where a
+  mailer writes headers.
+- **Changed:** the rate limit counts an address canonicalised: an IPv4-mapped IPv6
+  address as its IPv4, and IPv6 by its /64.
+- The login page remembers a local `next` (web-base 0.10.0's gate sends one) and the
+  redemption lands there instead of `:after-login`.
+- A `:rate-limit` function may answer `{:allowed? … :retry-after-ms …}`, and the 429
+  then carries its `Retry-After`; `auth/fixed-window-decider` is re-exported.
+- `dev.arkaitz.auth-base.testing`: a clock the test moves, a mailbox for `:deliver!`,
+  `token-of`, the recording store and the five view states.
+- Tests run against web-base 0.10.0.
+
 ## 0.7.0 — 2026-09-29
 
 - **Changed:** `wrap-revoked` judges a request as it arrived, before its handler runs,

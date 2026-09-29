@@ -85,7 +85,8 @@
     :ttl-ms     how long a challenge lives (default 15 minutes)
     :clock      (fn []) → epoch milliseconds (default the system clock)
     :bootstrap  identifiers that hold no record and may still enter (SPEC §12)
-    :normalise  (fn [identifier]) → the canonical form (default trim + lower-case)
+    :normalise  (fn [identifier]) → the canonical form (default trim + lower-case);
+                idempotent, since a form already canonical is put through it again
     :on-unknown (fn [identifier]) → a subject, or nil — how this host answers a
                 redemption by someone it has no record of. Absent, there is no
                 such answer and the redemption fails, which is what every host
@@ -100,6 +101,10 @@
            (vec (sort unknown)) nil))
   (when-not (satisfies? store/Store store)
     (fail! ":store must implement dev.arkaitz.auth-base.store/Store" [:store] (type store)))
+  (when-not (satisfies? store/Challenges store)
+    (fail! (str ":store must implement dev.arkaitz.auth-base.store/Challenges too (since 0.8.0),"
+                " so a revocation can end the links its subject has not used")
+           [:store] (type store)))
   (when (and (some? deliver!) (some? deliver-with-request!))
     (fail! "give :deliver! or :deliver-with-request!, not both — which one delivers would be a guess"
            [:deliver-with-request!] nil))
@@ -171,6 +176,14 @@
                     ;; The type and not the value: what a caller mis-wired may
                     ;; be a whole request map.
                     {:identifier-type (some-> identifier class .getName)})))
+  ;; A control character — a line break above all — is no part of any address, and in
+  ;; one it reaches a host's mailer as a header it did not write, and its log as a line
+  ;; it did not write. A fact about the shape again, asking the store nothing.
+  ;; Every control character, C1 included (`\p{Cntrl}` is ASCII's alone), and the two
+  ;; Unicode separators: no header breaks on those, but a log viewer does, and the
+  ;; domain of an address is what a failed delivery logs.
+  (when (re-find #"[\p{Cc}\u2028\u2029]" identifier)
+    (throw (ex-info "auth-base: issue! takes an identifier with no control characters" {})))
   (let [identifier (normalise identifier)
         token      (token/mint)]
     (store/put-challenge! store token identifier (instant/later (clock) ttl-ms))
@@ -263,7 +276,22 @@
   "Ends the subject's access everywhere (SPEC §10). Every session of theirs
   carries the generation it was born with and dies at its next request; there
   is no enumeration of sessions to do, and none is possible over Ring's store
-  protocol, which is why revocation lives on the subject."
-  [{:keys [store]} subject]
-  (store/bump-generation! store subject)
+  protocol, which is why revocation lives on the subject.
+
+  The links issued for the subject's identifiers and not used yet are dropped
+  first (since 0.8.0) — a bootstrap identity's by the identifier it carries, since it
+  has no record to ask about. A link that survived would sign in after the
+  revocation, which after a recovered mailbox is its intruder's way back. Dropped *before* the generation moves, so a
+  redemption that starts in between finds no link, where the other order would let
+  one born after the move keep the new generation; and the move is in a `finally`,
+  so a store that fails to drop still ends every session before the failure
+  reaches the caller."
+  [{:keys [store normalise]} subject]
+  (try
+    (store/drop-challenges! store (distinct (map normalise (if (and (map? subject) (:ab/bootstrap? subject))
+                                                             ;; No record, by definition: the store is not
+                                                             ;; asked about a key it never holds.
+                                                             [(:ab/identifier subject)]
+                                                             (store/identifiers-of store subject)))))
+    (finally (store/bump-generation! store subject)))
   nil)

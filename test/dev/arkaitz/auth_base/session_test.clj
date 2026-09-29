@@ -12,7 +12,7 @@
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.session :as session]
             [dev.arkaitz.auth-base.store :as store]
-            [dev.arkaitz.auth-base.support :as support]
+            [dev.arkaitz.auth-base.testing :as abt]
             [dev.arkaitz.web-base :as wb]
             [ring.middleware.session :as ring-session]
             [ring.middleware.session.memory :as memory]
@@ -182,7 +182,7 @@
   "A ceremony over a store that logs every call, and forbids the methods in `forbid`."
   [log forbid]
   (let [inner (store/in-memory {:subjects {"ada@x.test" {:id 1}}})]
-    (ceremony/ceremony {:store    (support/recording inner log forbid)
+    (ceremony/ceremony {:store    (abt/recording inner log forbid)
                         :deliver! (fn [_ _])
                         :link     {:base-url "https://x.test" :redeem-path "/entrar"}})))
 
@@ -209,19 +209,19 @@
         {:keys [app store]} (web-base-app ceremony ada (session/subject-fn ceremony))]
     (reset! log [])
     (app (mock/request :get "/"))
-    (is (= [] (support/calls log)) "control: an anonymous request reads no generation, so what counts below is the session's")
+    (is (= [] (abt/calls log)) "control: an anonymous request reads no generation, so what counts below is the session's")
     (ceremony/generation ceremony {:id 1})
-    (is (= [:generation] (support/calls log)) "control: the recording store sees a read when there is one")
+    (is (= [:generation] (abt/calls log)) "control: the recording store sees a read when there is one")
     (reset! log [])
     (is (= 200 (:status (app signed))) "precondition: the signed-in request answers")
-    (is (= [:generation] (support/calls log))
+    (is (= [:generation] (abt/calls log))
         "a live signed-in request reads the generation once: web-base's subject layer reads it and wrap-revoked takes its answer")
     (is (some? (ring-store/read-session store "live")) "and a live session's row stays")
     (ceremony/revoke! ceremony {:id 1})
     (reset! log [])
     (app signed)
     (is (nil? (ring-store/read-session store "live")) "revoked, the next request through the route deletes the row")
-    (is (= [:generation :generation] (support/calls log))
+    (is (= [:generation :generation] (abt/calls log))
         "asking the store itself, since web-base's nil alone proves nothing")))
 
 (deftest wrap-revoked-under-web-base-with-no-subject-fn-keeps-a-live-session
@@ -245,7 +245,7 @@
         trusting (recorded log #{:generation})
         asking   (recorded log #{})
         ada      (:session (session/establish asking {} {:id 1}))
-        run      (fn [ceremony request] (reset! log []) [((session/wrap-revoked plain ceremony) request) (support/calls log)])]
+        run      (fn [ceremony request] (reset! log []) [((session/wrap-revoked plain ceremony) request) (abt/calls log)])]
     (let [[r calls] (run trusting {:session ada :wb/subject {:id 1}})]
       (is (= [false []] [(contains? r :session) calls]) "a subject on the request leaves the session alone, unread"))
     (let [[r calls] (run trusting {:session ada :wb/subject false})]
@@ -273,7 +273,7 @@
         revoking (fn [_] (ceremony/revoke! ceremony {:id 1}) {:status 200 :headers {} :body "x"})]
     (reset! log [])
     (let [r ((session/wrap-revoked revoking ceremony) {:session ada})]
-      (is (= [:generation :bump-generation!] (support/calls log))
+      (is (= [:generation :identifiers-of :drop-challenges! :bump-generation!] (abt/calls log))
           "witness: the session was judged live first, and the handler revoked it after")
       (is (false? (contains? r :session))
           "so the response that revoked it leaves it alone: the question was asked of the request as it arrived"))

@@ -45,6 +45,20 @@
     "Ends every session of `subject` by moving its generation on. Returns the
     new generation. It must work for a subject with no account row."))
 
+(defprotocol Challenges
+  "What a revocation needs of the store beyond moving a generation (since 0.8.0): the
+  links a subject has not used yet. A link issued before `revoke!` would otherwise
+  still sign in for its whole lifetime — after a mailbox is recovered, exactly the
+  links its intruder holds. Required at construction beside `Store`."
+  (identifiers-of [store subject]
+    "The identifiers the store holds for `subject`, as it stored them — empty when it
+    has none, as for a bootstrap identity (SPEC §12).")
+
+  (drop-challenges! [store identifiers]
+    "Removes every pending challenge issued for any of `identifiers`, and returns how
+    many. A challenge being taken at that moment is either removed here or handed to
+    its taker, never both."))
+
 (defn- prune
   "Challenges already expired at `now`, dropped. Without this the map only ever
   grows: nothing else removes a challenge that was issued and never redeemed,
@@ -85,7 +99,18 @@
 
   (bump-generation! [_ subject]
     (get-in (swap! state update-in [:generations subject] (fnil inc 0))
-            [:generations subject])))
+            [:generations subject]))
+
+  Challenges
+  (identifiers-of [_ subject]
+    (sort (keep (fn [[identifier s]] (when (= s subject) identifier)) (:subjects @state))))
+
+  ;; One `swap-vals!` again: a take and this removal serialise on the same atom.
+  (drop-challenges! [_ identifiers]
+    (let [doomed    (set identifiers)
+          [before after] (swap-vals! state update :challenges
+                                     (fn [challenges] (into {} (remove (comp doomed :ab/identifier val)) challenges)))]
+      (- (count (:challenges before)) (count (:challenges after))))))
 
 (defn in-memory
   "The implementation that ships with the library, so the harness runs with no

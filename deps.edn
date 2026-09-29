@@ -50,7 +50,7 @@
          :extra-deps  {dev.arkaitz/web-base {:mvn/version "0.9.0"}}
          :main-opts   ["-m" "demo.main"]}
 
-  :dev {:extra-paths ["dev" "harness/src" "demo/src" "demo/resources"]
+  :dev {:extra-paths ["harness/src" "demo/src" "demo/resources"]
         :extra-deps  {ring/ring-jetty-adapter {:mvn/version "1.15.5"}
                       dev.arkaitz/web-base    {:mvn/version "0.9.0"}}}
 

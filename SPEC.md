@@ -197,6 +197,10 @@ session freezes the returned value, every later request re-reads the generation 
 Two keys, so the session born at registration compares 0 against 0 for ever and **§10's
 revocation can never end it**. Return the row, not the row plus a flag saying it was new.
 
+**Amended 2026-09-29 (0.8.0).** A string carrying a control character is refused as
+well — a CR/LF reached `deliver!`, where a host's mailer writes headers. Like the type,
+it is a fact about the value's shape, never about who owns it, so §11 is untouched.
+
 ## 7 · Storage is a port
 
 The same move Ring made for sessions and web-base repeated for its own: **do not
@@ -297,6 +301,22 @@ second, carried over, would give whoever planted the session the signed-in sessi
 CSRF token. What is kept was written before anyone signed in, possibly by that same
 person: the host checks it where it uses it, and keeps nothing that grants authority.
 
+**Amended 2026-09-29 (0.8.0): no GET establishes a session.** A redemption by GET
+signed in whoever's browser fetched the link: a mail gateway's scanner, which spent it
+before the person clicked, and a page elsewhere, which could sign a visitor in as the
+attacker who had requested a link for their own address — login CSRF, with no
+interaction. The GET now renders the host's view in a fifth state, `{:confirm? true}`,
+and the POST it submits, behind the host's CSRF and a `SameSite=Lax` cookie, redeems.
+Binding the challenge to the browser that asked was the alternative, and was set aside:
+it grants one-click sign-in to a value held in a pre-login session, which a fixed
+session reproduces — exactly what this section's rotation exists to deny — and it breaks
+opening the link on another device. The page's address is the token, so it is sent with
+`no-store` and `Referrer-Policy: no-referrer`.
+
+The same release returns a person to the page that sent them to sign in: the login page
+keeps a local `next` in the session, and the redemption prefers it to `:after-login`,
+checking it again where the `Location` is written.
+
 ## 10 · Revocation
 
 This is the point the whole design turns on, because a magic link **attests control
@@ -336,6 +356,24 @@ rather than instantly.
 A store that *can* index sessions by subject may delete them outright as a faster
 path. That is an optimisation a store offers, never the contract this module relies on.
 
+**Amended 2026-09-29 (0.8.0): a revocation also ends the links not used yet.** A link
+issued before `revoke!` signed in for its whole lifetime afterwards — after a mailbox is
+recovered, exactly the links its intruder holds. `revoke!` now drops them, through a
+second protocol every store implements beside `Store`, checked at construction:
+
+```clojure
+(defprotocol Challenges
+  (identifiers-of   [store subject])       ; the identifiers it holds for the subject
+  (drop-challenges! [store identifiers]))  ; removes their pending challenges, returns how many
+```
+
+A bootstrap subject has no record, so its links are found by the identifier it
+carries. The links are dropped **before** the generation moves: the other order lets a
+redemption that starts between the two take a link and read the new generation, and
+survive the revocation it raced. The move sits in a `finally`, so a store that fails to
+drop still ends every session before the failure reaches the caller. The cost, accepted:
+a link somebody asked for before "sign out everywhere" no longer works after it.
+
 ## 11 · Anti-enumeration, and the rate limit
 
 Settled in the first consumer's log and inherited here without change:
@@ -360,6 +398,14 @@ whether and never when, so its `429` carries no `Retry-After` rather than an inv
 one — an invented one is the defect below (§17, 2026-09-25). The `429`'s body is the
 host's own view in a fourth state, `{:limited? true}`: an empty one reached the person
 as the browser's own error page, with no form and no sentence (db-base FRICTION.md, F9).
+
+**Amended 2026-09-29 (0.8.0).** The source is counted canonicalised, where the key is
+made: an IPv4-mapped IPv6 address as its IPv4, an IPv6 address by its /64 — what one
+client is handed — and anything else as it came. Parsed as a literal, never resolved.
+`::1` and `0:0:0:0:0:0:0:1` had been two sources, and one IPv6 host had 2^64. Behind
+proxies, which entry of `X-Forwarded-For` is the source is the stack's to say; web-base
+0.10.0 counts `:proxy-hops` from the right, since the entries to the left are the
+client's to write.
 
 ## 12 · The bootstrap
 
@@ -522,6 +568,11 @@ instant, the single configuration where the literal was right. Now:
   passed there the limit would silently vanish. It is not re-exported from
   `dev.arkaitz.auth-base` either — it exists for the handlers, and a host that wants
   the delay elsewhere requires `dev.arkaitz.auth-base.rate-limit` knowingly.
+  **Both halves reversed 2026-09-29 (0.8.0)**, because hosts building their own limiter
+  over it wanted its `Retry-After`: a `:rate-limit` function may answer the decision,
+  whose map is read for a boolean `:allowed?` — and one without it is refused, so the
+  truthy map can no longer open the gate — and `auth/fixed-window-decider` is
+  re-exported.
 - The handlers build it from the map and derive the header from it. **A host's own
   function lost its `"60"`** and now gets a `429` with no header: the semantics shift
   of this fix, recorded where the next reader will look.

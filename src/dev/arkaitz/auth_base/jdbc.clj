@@ -34,11 +34,14 @@
            [javax.sql DataSource]))
 
 (def ddl
-  "The three tables, as one statement each, for the host's own migrations. Names are
-  fixed — the host's tables refer to `account(subject)` by foreign key."
+  "The three tables and the index a revocation reads them by, as one statement each,
+  for the host's own migrations. Names are fixed — the host's tables refer to
+  `account(subject)` by foreign key. The index is since 0.8.0: a host that copied the
+  three tables before adds it as a migration of its own."
   ["CREATE TABLE account (subject VARCHAR(36) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL UNIQUE, created_at BIGINT NOT NULL)"
    "CREATE TABLE account_generation (subject VARCHAR(36) NOT NULL PRIMARY KEY, generation BIGINT NOT NULL)"
-   "CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL)"])
+   "CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL)"
+   "CREATE INDEX login_challenge_identifier ON login_challenge (identifier)"])
 
 (def ^:private as-maps {:builder-fn rs/as-unqualified-lower-maps})
 
@@ -185,7 +188,17 @@
 
   (subject-for [_ identifier] (subject-for ds identifier))
   (generation [_ subject] (generation ds subject))
-  (bump-generation! [_ subject] (bump-generation! ds subject)))
+  (bump-generation! [_ subject] (bump-generation! ds subject))
+
+  store/Challenges
+  (identifiers-of [_ subject]
+    (mapv :identifier (jdbc/execute! ds ["SELECT identifier FROM account WHERE subject = ? ORDER BY identifier" subject]
+                                     as-maps)))
+
+  ;; A DELETE per identifier, each deciding against a concurrent take the way
+  ;; take-challenge!'s own DELETE does: whichever removes the row has it.
+  (drop-challenges! [_ identifiers]
+    (reduce + 0 (map #(changed (one ds "DELETE FROM login_challenge WHERE identifier = ?" %)) (distinct identifiers)))))
 
 (defn store
   "auth-base's `Store` over `ds`, a `javax.sql.DataSource` whose database has the three

@@ -84,12 +84,19 @@ What it does not do: authorise, send mail, persist, render, or know your domain.
                 :rate-limit   {:limit 5 :window-ms (* 15 60 1000)}}))
 ```
 
-`:view` is called with the request and one of four states — `{}`, `{:sent? true}`,
-`{:spent? true}`, `{:limited? true}` — and returns whatever your renderer accepts as a
-`:body`: Hiccup under web-base, a string under plain Ring. That is the whole of what
-this module knows about pages. `{:limited? true}` is the form refused by the rate
-limit, answered with status 429: give it a sentence, or the person sees the ordinary
-form and no reason.
+`:view` is called with the request and one of five states — `{}`, `{:sent? true}`,
+`{:spent? true}`, `{:limited? true}`, `{:confirm? true}` — and returns whatever your
+renderer accepts as a `:body`: Hiccup under web-base, a string under plain Ring. That is
+the whole of what this module knows about pages. `{:limited? true}` is the form refused
+by the rate limit, answered with status 429: give it a sentence, or the person sees the
+ordinary form and no reason.
+
+`{:confirm? true}` is what opening a link shows (since 0.8.0): one button, whose POST
+signs in. **No GET redeems**, because a GET is what a mail gateway's link scanner sends
+before the person clicks, and what a page elsewhere can make a browser send — which
+signed the victim in as the attacker who requested the link. Its form posts to
+`:action`, the link itself, with your CSRF field; the page is sent with `no-store` and
+`Referrer-Policy: no-referrer`, since its address is the token.
 
 Every state also carries `:action`, the path your form posts to (`:login-path`), and
 `:field`, the name its input must have (`:field`, default `"identifier"`). Use them
@@ -97,16 +104,27 @@ instead of spelling either by hand: a form that posts elsewhere, or names its in
 otherwise, signs nobody in and raises no error.
 
 ```clojure
-(defn login [request {:keys [sent? spent? limited? action field]}]
-  (list
-   (when sent?    [:p "If that address has an account, the link is on its way."])
-   (when spent?   [:p "That link no longer works: it is single use and it expires."])
-   (when limited? [:p "Too many attempts from here. Wait a little and ask again."])
-   [:form {:method "post" :action action}
-    (security/csrf-field request)                 ; web-base's; see below
-    [:input {:type "email" :name field :required true}]
-    [:button {:type "submit"} "Send me a link"]]))
+(defn login [request {:keys [sent? spent? limited? confirm? action field]}]
+  (if confirm?
+    [:form {:method "post" :action action}
+     (security/csrf-field request)
+     [:button {:type "submit"} "Sign in"]]
+    (list
+     (when sent?    [:p "If that address has an account, the link is on its way."])
+     (when spent?   [:p "That link no longer works: it is single use and it expires."])
+     (when limited? [:p "Too many attempts from here. Wait a little and ask again."])
+     [:form {:method "post" :action action}
+      (security/csrf-field request)                 ; web-base's; see below
+      [:input {:type "email" :name field :required true}]
+      [:button {:type "submit"} "Send me a link"]])))
 ```
+
+**Back to the page that asked.** When the login page is reached with `?next=/a/page` —
+web-base's gate adds it (since 0.10.0) — the page is remembered in the session and the
+redemption lands there instead of `:after-login` (since 0.8.0). Only a local path is
+taken, checked when it is stored and again when it is used: `//evil.test`, `/\evil.test`,
+a scheme, a control character or anything over 2048 characters is ignored, and the
+landing is `:after-login`.
 
 Then `(auth/subject-fn ceremony)` is your `request → subject-or-nil`, and it is also
 where revocation takes effect.
@@ -124,8 +142,8 @@ other side of that function. Neither depends on the other — **you** hold both,
 
 ```clojure
 {:deps {org.clojure/clojure   {:mvn/version "1.12.5"}
-        dev.arkaitz/web-base  {:mvn/version "0.9.0"}   ; the web foundation
-        dev.arkaitz/auth-base {:mvn/version "0.7.0"}}} ; the ceremony
+        dev.arkaitz/web-base  {:mvn/version "0.10.0"}  ; the web foundation
+        dev.arkaitz/auth-base {:mvn/version "0.8.0"}}} ; the ceremony
 ```
 
 web-base brings reitit-ring, hiccup, ring-jetty-adapter, tools.logging, tempura,
@@ -271,7 +289,10 @@ does not live in the store: **it lives on the subject.**
 The store keeps a generation per subject; the session carries the generation it was
 born with; `subject-fn` compares them on every request. `revoke!` moves the number on
 and every session of that subject stops yielding a subject at its next request — in
-this browser and in any other, with any store, including the cookie.
+this browser and in any other, with any store, including the cookie. It also drops the
+links issued for that subject and not used yet (since 0.8.0): after a mailbox is
+recovered, those are exactly what its intruder holds. A link asked for before "sign out
+everywhere" no longer works after it; ask for another.
 
 Its cost is one store read per signed-in request — an indexed read, measured at 9.7 µs
 on SQLite, after the one your session store already makes — and its bound is that
@@ -279,7 +300,9 @@ revocation takes effect on the next request rather than instantly. A cache would
 that bound to "when the cache expires", which is a different revocation.
 
 `(auth/wrap-revoked handler ceremony)` is optional and additionally throws the dead
-session away. Under web-base, put it in the route data, where reitit runs it inside the
+session away. **Handler first**, unlike every other function here, which takes the
+ceremony first: it is middleware, so it threads with `->` and sits in reitit's
+`[[auth/wrap-revoked ceremony]]` as written below. The other order is refused. Under web-base, put it in the route data, where reitit runs it inside the
 session layer:
 
 ```clojure
@@ -375,10 +398,14 @@ CREATE TABLE account (subject VARCHAR(36) NOT NULL PRIMARY KEY, identifier VARCH
 CREATE TABLE account_generation (subject VARCHAR(36) NOT NULL PRIMARY KEY, generation BIGINT NOT NULL);
 --;;
 CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL);
+--;;
+CREATE INDEX login_challenge_identifier ON login_challenge (identifier);
 ```
 
 The `--;;` lines are ragtime's separator, which db-base's migrations run through: the
-block pasted whole into one `.up.sql` file is three statements. Without them SQLite's
+block pasted whole into one `.up.sql` file is four statements. The index is since 0.8.0,
+when `revoke!` began dropping the subject's unused links: a host that copied the three
+tables before adds it as a migration of its own. Without them SQLite's
 driver runs the first and silently drops the rest, and the migration is recorded as
 applied all the same; `check!` then names the table that is missing.
 
@@ -431,14 +458,20 @@ something to name when there is no local identity at all.
 | `:after-login` | where a redeemed link lands (default `/`) |
 | `:after-logout` | where a logout lands (default `:login-path`) |
 | `:field` | the form field holding the identifier (default `identifier`) |
-| `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean)`, or absent — see below for what a refusal answers; the map also takes `:max-keys`, how many sources it tracks at once (10000), dropping the oldest window when full |
+| `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean-or-decision)`, or absent — see below for what a refusal answers; the map also takes `:max-keys`, how many sources it tracks at once (10000), dropping the oldest window when full |
 | `:keep-session` | a set of keys of the session the redemption arrives with that the signed-in session keeps (since 0.7.0) — `#{:locale}` for a language chosen before signing in. The id still rotates and everything else is dropped; `:ab/` keys and the CSRF token are refused. What is kept was written before anyone signed in, possibly by whoever planted the session: check it where you use it, and keep nothing that grants authority |
 
 The rate limit is keyed by `:remote-addr` — the **source**, never the address. Counting
 per address would answer differently for one somebody had just asked about, and would
-let anyone spend a known user's allowance and lock them out of their own login. Behind
-a proxy that is the proxy's address unless your stack is told to trust
-`X-Forwarded-For`.
+let anyone spend a known user's allowance and lock them out of their own login. The key
+is the address canonicalised (since 0.8.0): an IPv4 address written as IPv6 is its IPv4,
+and an IPv6 address counts by its /64, the smallest block a subscriber is handed —
+otherwise `::1` and `0:0:0:0:0:0:0:1` were two sources, and one host had 2^64. Many are
+handed a /56 or a /48, which still count as 256 or 65 536 sources: the key bounds that
+abuse and does not end it. Behind a proxy
+`:remote-addr` is the proxy's address unless your stack is told which entry of
+`X-Forwarded-For` to trust — web-base's `:security {:proxy-hops n}`, one per proxy you
+run.
 
 A refused request is a `429` with `Cache-Control: no-store` whose body is your `:view`
 in its `{:limited? true}` state — the page the person was on, and a reason — and not an
@@ -446,7 +479,20 @@ empty body a browser replaces with its own error page. Under the map it also
 carries `Retry-After`: the whole seconds until that source's window reopens, rounded
 up, so a client that waits exactly that long gets in. Under your own
 `(fn [key] boolean)` it carries none — your function says whether, not when, and a
-number made up here would send an obedient client straight back into the refusal.
+number made up here would send an obedient client straight back into the refusal. Your
+function may answer a decision instead (since 0.8.0), `{:allowed? false :retry-after-ms
+n}` — what `auth/fixed-window-decider` answers, for a limiter of your own built over it —
+and then the header is its `n`; a map without a boolean `:allowed?` is refused.
+
+An API beside the pages answers a missing or dead credential with
+`(auth/unauthorized ceremony "Bearer realm=\"api\"")`: the 401 with the challenge you
+name, where the one-argument form names this module's session scheme.
+
+**Tests.** `dev.arkaitz.auth-base.testing` (since 0.8.0) holds what every host wrote for
+itself: a `clock` the test moves with `advance!`, a `mailbox` with `deliver-into` as
+`:deliver!` and `token-of`/`last-link` to read what was sent, the `recording` store that
+shows what the ceremony asked, and `view-states`, the five states to render your view
+with. It is for tests; nothing on a request path needs it.
 
 ## The two proofs
 

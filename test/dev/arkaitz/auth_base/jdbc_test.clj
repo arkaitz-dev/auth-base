@@ -12,8 +12,10 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.jdbc :as aj]
             [dev.arkaitz.auth-base.store :as store]
+            [dev.arkaitz.auth-base.testing :as abt]
             [dev.arkaitz.auth-base.token :as token]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs])
@@ -187,6 +189,22 @@
     (jdbc/execute-one! ds ["DELETE FROM login_challenge WHERE token = ?" token])
     {:ab/identifier (:identifier row) :ab/expires-at (:expires_at row)}))
 
+(deftest a-take-and-a-drop-racing-for-one-row--whichever-deletes-it-has-it--and-never-both
+  (on-engines
+   (fn [engine ds]
+     (plant! ds "INSERT INTO login_challenge (token, identifier, expires_at) VALUES (?, ?, ?)" "T" ada 9999)
+     (let [{:keys [parked-in-time? exit slow fast]}
+           (race ds a-delete #(store/take-challenge! (aj/store %) "T") #(store/drop-challenges! (aj/store %) [ada]))]
+       (is (and parked-in-time? (= :released exit)) (str engine ": the take was held past its read, inside its DELETE"))
+       (is (= [[:ok 1] [:ok nil]] [fast slow])
+           (str engine ": the drop removed the row, so the take that had read it is handed nothing")))
+     (plant! ds "INSERT INTO login_challenge (token, identifier, expires_at) VALUES (?, ?, ?)" "U" ada 9999)
+     (let [{:keys [parked-in-time? exit slow fast]}
+           (race ds a-delete #(store/drop-challenges! (aj/store %) [ada]) #(store/take-challenge! (aj/store %) "U"))]
+       (is (and parked-in-time? (= :released exit)) (str engine ": the drop was held inside its DELETE"))
+       (is (= [[:ok {:ab/identifier ada :ab/expires-at 9999}] [:ok 0]] [fast slow])
+           (str engine ": the take removed the row, so the drop counts nothing"))))))
+
 (deftest a-naive-take-yields-two-winners-under-this-harness
   (on-engines
    (fn [engine ds]
@@ -307,7 +325,9 @@
   (on-engines (fn [engine ds] (is (identical? ds (aj/check! ds)) (str engine ": the ddl passes its own check"))))
   (doseq [[i table cols] columns
           col cols]
-    (on-engines (update aj/ddl i #(str/replace-first % (str col " ") (str col "_drifted ")))
+    ;; The tables alone: check! reads names, never the index, which a drifted column
+    ;; would stop from being created at all.
+    (on-engines (subvec (update aj/ddl i #(str/replace-first % (str col " ") (str col "_drifted "))) 0 3)
                 (fn [engine ds]
                   (let [e (try (aj/check! ds) nil (catch Throwable e e))]
                     (is (= {:table table :config-key [:datasource]} (ex-data e)) (str engine ": " table "." col " renamed is refused naming its table"))
@@ -317,11 +337,73 @@
                              (str/includes? (str/lower-case (str (ex-message (ex-cause e)))) col))
                         (str engine ": with the engine's refusal, naming " col ", as its cause"))))))
   (doseq [[i table] (map (juxt first second) columns)]
-    (on-engines (vec (concat (subvec aj/ddl 0 i) (subvec aj/ddl (inc i))))
+    (on-engines (vec (concat (subvec aj/ddl 0 i) (subvec aj/ddl (inc i) 3)))
                 (fn [engine ds]
                   (let [e (try (aj/check! ds) nil (catch Throwable e e))]
                     (is (= {:table table :config-key [:datasource]} (ex-data e)) (str engine ": a missing " table " is named"))
                     (is (instance? SQLException (ex-cause e)) (str engine ": the engine's refusal is its cause")))))))
+
+(deftest ddl-creates-the-index-a-revocation-reads-login_challenge-by--on-both-engines
+  (let [indexes (fn [^DataSource ds]
+                  (with-open [c (.getConnection ds)]
+                    (let [md    (.getMetaData c)
+                          table (if (.storesUpperCaseIdentifiers md) "LOGIN_CHALLENGE" "login_challenge")]
+                      (with-open [rs (.getIndexInfo md nil nil table false false)]
+                        (loop [acc #{}]
+                          (if (.next rs)
+                            (recur (conj acc [(some-> (.getString rs "INDEX_NAME") str/lower-case)
+                                              (some-> (.getString rs "COLUMN_NAME") str/lower-case)
+                                              (.getBoolean rs "NON_UNIQUE")]))
+                            acc))))))
+        split   (fn [rows] [(set (filter #(nth % 2) rows)) (set (map rest (remove #(nth % 2) rows)))])]
+    (on-engines (fn [engine ds]
+                  (is (= [#{["login_challenge_identifier" "identifier" true]} #{["token" false]}] (split (indexes ds)))
+                      (str engine ": one index on identifier, not unique, beside the key's — which says the table was found"))))
+    (on-engines (subvec aj/ddl 0 3)
+                (fn [engine ds]
+                  (is (= [#{} #{["token" false]}] (split (indexes ds)))
+                      (str engine ": control: the three tables alone have only the key's"))))))
+
+(deftest drop-challenges!-removes-exactly-the-named-identifiers-rows-and-counts-them--identifiers-of-answers-the-account-or-nothing
+  (on-engines
+   (fn [engine ds]
+     (let [st     (aj/store ds)
+           s      (aj/register! ds ada)
+           tokens #(set (map first (raw ds "SELECT token FROM login_challenge")))]
+       (doseq [[t id] [["t1" ada] ["t2" ada] ["t3" "bo@x.test"] ["t4" "Ada@X.test"]]]
+         (plant! ds "INSERT INTO login_challenge (token, identifier, expires_at) VALUES (?, ?, ?)" t id 9999))
+       (is (= [[ada] []] [(store/identifiers-of st s) (store/identifiers-of st "nobody")])
+           (str engine ": identifiers-of answers the account's identifier, and nothing for a subject with none"))
+       (is (= 1 (count-of ds "account")) (str engine ": and creates nothing"))
+       (is (= 2 (store/drop-challenges! st [ada ada "nobody@x.test"]))
+           (str engine ": two rows removed, counted as rows, not as the three identifiers named"))
+       (is (= #{"t3" "t4"} (tokens)) (str engine ": another identifier's row and a case-different one stay: the match is exact"))
+       (is (= [0 0] [(store/drop-challenges! st [ada]) (store/drop-challenges! st [])]) (str engine ": nothing left to drop is 0"))
+       (is (= #{"t3" "t4"} (tokens)) (str engine ": and removes nothing"))
+       (is (= 2 (store/drop-challenges! st ["bo@x.test" "Ada@X.test"])) (str engine ": each identifier's rows, summed"))
+       (is (= #{} (tokens)) (str engine ": all gone"))))))
+
+(deftest revoke!-through-the-jdbc-store-ends-the-subjects-pending-links-and-no-others
+  (on-engines
+   (fn [engine ds]
+     (let [box   (abt/mailbox)
+           clock (abt/clock 1000)
+           c     (ceremony/ceremony {:store (aj/store ds) :deliver! (abt/deliver-into box) :clock clock
+                                     :link {:base-url "https://x.test" :redeem-path "/entrar"}})
+           a     (aj/register! ds ada)
+           b     (aj/register! ds "bo@x.test")
+           link! (fn [id] (ceremony/issue! c id) (abt/token-of (abt/last-link box id)))
+           a0    (link! ada)
+           a1    (link! ada)
+           b1    (link! "bo@x.test")
+           rows  #(set (map first (raw ds "SELECT token FROM login_challenge")))]
+       (is (= a (ceremony/redeem! c a0)) (str engine ": witness: a link of the subject signs in before"))
+       (is (= #{a1 b1} (rows)) (str engine ": witness: two links wait"))
+       (ceremony/revoke! c a)
+       (is (= #{b1} (rows)) (str engine ": the subject's link is gone and the other's stays"))
+       (is (= [nil b] [(ceremony/redeem! c a1) (ceremony/redeem! c b1)]) (str engine ": so only the other signs in"))
+       (is (= a (ceremony/redeem! c (link! ada))) (str engine ": a link asked for after it works"))
+       (is (= [1 0] [(aj/generation ds a) (aj/generation ds b)]) (str engine ": and only the subject's generation moved"))))))
 
 (deftest the-readme-shows-exactly-the-ddl
   (let [readme (slurp (io/file "README.md"))
@@ -329,8 +411,8 @@
         stmts  (some->> block str/split-lines (map str/trim) (remove str/blank?) (remove #{"--;;"})
                         (mapv #(str/replace % #";$" "")))
         seps   (some->> block str/split-lines (map str/trim) (filter #{"--;;"}) count)]
-    (is (= 2 seps) "ragtime's separator stands between each two statements, so the block pasted whole is three")
-    (is (= 3 (count stmts)) (str "precondition: the README's sql block was found: " (pr-str block)))
+    (is (= 3 seps) "ragtime's separator stands between each two statements, so the block pasted whole is four")
+    (is (= 4 (count stmts)) (str "precondition: the README's sql block was found: " (pr-str block)))
     (is (= aj/ddl stmts) "the statements a host copies are the ones the library reads")))
 
 (deftest latest-challenge-token-answers-the-most-recent-challenge-of-that-identifier-or-nil

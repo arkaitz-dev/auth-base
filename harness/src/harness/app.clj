@@ -36,11 +36,17 @@
 
 (defn login-view
   "The one view auth-base asks a host for. It is called with the request and
-  one of four states, and returns whatever this host's renderer takes — here
+  one of five states, and returns whatever this host's renderer takes — here
   a string, because there is no renderer. The form posts to the state's
   `:action` and names its input `:field`, so it cannot disagree with the
-  handlers' configuration."
-  [_request {:keys [sent? spent? limited? action field]}]
+  handlers' configuration. Opening a link shows `:confirm?`: one button, posting to the
+  link's own address — which this harness, with no CSRF protection, cannot make
+  somebody's own click; a real host's must."
+  [_request {:keys [sent? spent? limited? confirm? action field]}]
+  (if confirm?
+    (page "Entrar"
+          "<form method=\"post\" action=\"" (escape action) "\">"
+          "<button type=\"submit\">Entrar</button></form>")
   (page "Entrar"
         (when sent?
           "<p><strong>Si esa dirección existe, el enlace va de camino.</strong> "
@@ -52,7 +58,7 @@
         "<form method=\"post\" action=\"" (escape action) "\">"
         "<label>Dirección <input name=\"" (escape field) "\" type=\"email\" required autofocus></label> "
         "<button type=\"submit\">Enviar enlace</button></form>"
-        "<p class=\"note\">La respuesta es la misma se conozca o no la dirección (SPEC §11).</p>"))
+        "<p class=\"note\">La respuesta es la misma se conozca o no la dirección (SPEC §11).</p>")))
 
 (defn- home-view [subject]
   (page "Harness"
@@ -88,7 +94,7 @@
   "A Ring handler with no router at all: the module's handlers are mounted by
   matching the URI, which is what a host without reitit would do."
   [ceremony]
-  (let [{:keys [form issue redeem logout]}
+  (let [{:keys [form issue confirm redeem logout]}
         (auth/handlers ceremony {:view         login-view
                                  :login-path   "/entrar"
                                  :logout-path  "/salir"
@@ -114,10 +120,13 @@
               (and (= :post request-method) (= "/entrar" uri))
               (issue request)
 
-              ;; Every /entrar/<something> is a redemption attempt. The module
-              ;; reads the token out of the URI itself, so there is nothing to
-              ;; parse here and no route parameter to name.
+              ;; Every /entrar/<something> is a redemption attempt: a GET shows the
+              ;; button, a POST redeems. The module reads the token out of the URI
+              ;; itself, so there is nothing to parse here and no route parameter to name.
               (and (= :get request-method) (.startsWith ^String uri "/entrar/"))
+              (confirm request)
+
+              (and (= :post request-method) (.startsWith ^String uri "/entrar/"))
               (redeem request)
 
               (and (= :post request-method) (= "/salir" uri))

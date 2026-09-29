@@ -37,6 +37,15 @@
                                                   "__anti-forgery-token" token})
                    (wbt/with-cookies page)))]))
 
+(defn- open-link
+  "A person opening the emailed link and pressing its button: the GET shows the
+  confirmation page, whose form carries this browser's CSRF token; the POST signs in.
+  Answers `[page response]`."
+  [app path browser]
+  (let [page (app (-> (mock/request :get path) (wbt/with-cookies browser)))]
+    [page (app (-> (mock/request :post path {"__anti-forgery-token" (wbt/csrf-token page)})
+                   (wbt/with-cookies browser)))]))
+
 (defn- link-path [links]
   (subs (second (last @links)) (count base)))
 
@@ -45,13 +54,17 @@
     (testing "the gate refuses before anything, and it is web-base's gate"
       (let [refused (app (mock/request :get "/privado"))]
         (is (= 303 (:status refused)))
-        (is (= "/entrar" (get-in refused [:headers "Location"]))
-            "sent to the login path the host configured, in both modules, once")))
+        (is (= "/entrar?next=%2Fprivado" (get-in refused [:headers "Location"]))
+            "sent to the login path the host configured, in both modules, once — carrying the page to return to")))
     (let [[page sent] (ask-for-a-link demo "ada@example.test")]
       (is (= 303 (:status sent)))
       (is (= "/entrar?ab=sent" (get-in sent [:headers "Location"])))
-      (let [opened  (app (-> (mock/request :get (link-path links)) (wbt/with-cookies page)))
+      (let [shown   (app (-> (mock/request :get (link-path links)) (wbt/with-cookies page)))
+            [_ opened] (open-link app (link-path links) page)
             private (app (-> (mock/request :get "/privado") (wbt/with-cookies opened)))]
+        (is (= [200 true] [(:status shown) (str/includes? (:body shown) ">Entrar</button>")])
+            "opening the link shows one button and signs nobody in")
+        (is (empty? (wbt/cookies shown)) "nor issues a session for the link")
         (is (= "/privado" (get-in opened [:headers "Location"]))
             "the link lands where the host said")
         (is (= 200 (:status private)) "and the gate lets the subject through")
@@ -86,7 +99,7 @@
 (deftest revocation-reaches-a-session-established-by-the-module
   (let [{:keys [app links ceremony] :as demo} (fresh)]
     (let [[page _] (ask-for-a-link demo "ada@example.test")
-          opened   (app (-> (mock/request :get (link-path links)) (wbt/with-cookies page)))
+          [_ opened] (open-link app (link-path links) page)
           signed   (fn [] (app (-> (mock/request :get "/privado") (wbt/with-cookies opened))))]
       (is (= 200 (:status (signed))) "the session works")
       (auth/revoke! ceremony {:id 1 :name "Ada"})
@@ -97,7 +110,7 @@
 (deftest an-administrator-with-no-record-passes-web-bases-gate-too
   (let [{:keys [app links ceremony] :as demo} (fresh)]
     (let [[page _] (ask-for-a-link demo "root@example.test")
-          opened   (app (-> (mock/request :get (link-path links)) (wbt/with-cookies page)))
+          [_ opened] (open-link app (link-path links) page)
           private  (app (-> (mock/request :get "/privado") (wbt/with-cookies opened)))]
       (is (= 200 (:status private))
           "web-base only ever checks that a subject is present, so a bootstrap identity

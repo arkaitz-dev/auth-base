@@ -49,12 +49,12 @@
   (subs (second (last @links)) (count base)))
 
 (defn- sign-in
-  "The whole ceremony from a person's side: ask for a link, open it, keep the
-  cookie. Everything about tokens is auth-base's; the harness only ever sees
+  "The whole ceremony from a person's side: ask for a link, open it and press its
+  button, keep the cookie. Everything about tokens is auth-base's; the harness only ever sees
   the URL it was handed."
   [{:keys [app links]} identifier]
   (app (assoc (mock/request :post "/entrar") :form-params {"identifier" identifier}))
-  (cookie-of (app (mock/request :get (link-path links)))))
+  (cookie-of (app (mock/request :post (link-path links)))))
 
 (deftest a-person-with-an-account-becomes-a-subject-and-stays-one
   (let [{:keys [app links] :as h} (fresh)]
@@ -68,9 +68,14 @@
           "asking for a link is answered by a redirect back to the page, never by a page")
       (is (= "ada@example.test" (first (last @links)))
           "and the address was canonicalised before anything was done with it"))
-    (let [cookie (cookie-of (app (mock/request :get (link-path links))))
+    (let [shown   (app (mock/request :get (link-path links)))
+          _       (is (= [200 nil] [(:status shown) (cookie-of shown)])
+                      "opening the link shows a button and signs nobody in: a mail scanner's GET spends nothing")
+          _       (is (str/includes? (:body shown) (str "action=\"" (link-path links) "\""))
+                      "the button posts back to the link's own address")
+          cookie  (cookie-of (app (mock/request :post (link-path links))))
           private (app (as (mock/request :get "/privado") cookie))]
-      (is (some? cookie) "opening the link establishes a session")
+      (is (some? cookie) "pressing it establishes a session")
       (is (= 200 (:status private)) "which reaches the private page")
       (is (str/includes? (:body private) ":name &quot;Ada&quot;")
           "as the subject the host's own store holds — the module never learned what a person is")
@@ -81,14 +86,14 @@
   (let [{:keys [app links clock] :as h} (fresh)]
     (app (assoc (mock/request :post "/entrar") :form-params {"identifier" "ada@example.test"}))
     (let [path (link-path links)]
-      (is (= "/" (get-in (app (mock/request :get path)) [:headers "Location"]))
+      (is (= "/" (get-in (app (mock/request :post path)) [:headers "Location"]))
           "the first click lands where the host said")
-      (is (= "/entrar?ab=spent" (get-in (app (mock/request :get path)) [:headers "Location"]))
+      (is (= "/entrar?ab=spent" (get-in (app (mock/request :post path)) [:headers "Location"]))
           "and the second is told the link is spent, however soon it comes"))
     (app (assoc (mock/request :post "/entrar") :form-params {"identifier" "ada@example.test"}))
     (let [path (link-path links)]
       (swap! clock + (* 15 60 1000))
-      (is (= "/entrar?ab=spent" (get-in (app (mock/request :get path)) [:headers "Location"]))
+      (is (= "/entrar?ab=spent" (get-in (app (mock/request :post path)) [:headers "Location"]))
           "and a link clicked after its quarter of an hour is spent too"))))
 
 (deftest an-unknown-address-is-answered-exactly-like-a-known-one
@@ -101,7 +106,7 @@
     (is (= ["ada@example.test" "nobody@example.test"] (mapv first @links))
         "and a link was composed for both, so the work was done either way")
     (is (= "/entrar?ab=spent"
-           (get-in (app (mock/request :get (link-path links))) [:headers "Location"]))
+           (get-in (app (mock/request :post (link-path links))) [:headers "Location"]))
         "the difference appears only where it is safe: to whoever holds the secret")))
 
 (deftest an-administrator-can-exist-before-any-data-does

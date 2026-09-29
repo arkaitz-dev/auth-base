@@ -2,7 +2,7 @@
   "The ceremony's tests. Nothing here sleeps: the clock is an atom shared by
   the ceremony and the store, so expiry is exercised by moving it.
 
-  The load-bearing fixture is `support/recording`, a store that logs every call
+  The load-bearing fixture is `abt/recording`, a store that logs every call
   and can be told to refuse one — see that namespace for why it has to exist.
 
   **What these tests do not prove: timing equality.** It is not measured, and
@@ -16,9 +16,11 @@
             [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.store :as store]
-            [dev.arkaitz.auth-base.support :as support])
+            [dev.arkaitz.auth-base.testing :as abt])
   (:import [clojure.lang ExceptionInfo]
-           [java.util Locale]))
+           [java.util Locale]
+           [java.util.concurrent CountDownLatch TimeUnit]
+           [java.util.concurrent.atomic AtomicBoolean]))
 
 (defn- fixture
   "A ceremony over a recording store, with the clock, the log and the
@@ -29,7 +31,7 @@
         log        (atom [])
         deliveries (atom [])
         inner      (store/in-memory {:subjects subjects :clock #(deref clock)})
-        recorder   (support/recording inner log (or forbid #{}))]
+        recorder   (abt/recording inner log (or forbid #{}))]
     {:clock      clock
      :log        log
      :deliveries deliveries
@@ -45,7 +47,7 @@
                            :bootstrap (or bootstrap [])}
                     normalise (assoc :normalise normalise)
                     ;; Into the SAME log the store writes to, and recorded before it
-                    ;; answers, for `support/recording`'s own reason: a hook that throws
+                    ;; answers, for `abt/recording`'s own reason: a hook that throws
                     ;; must still show that it was asked. One ordered log is what lets a
                     ;; test say the hook was asked *last*, rather than only that it was
                     ;; asked — and what makes an exact vector equality refuse an extra
@@ -62,7 +64,6 @@
                                                (swap! (.-state inner) assoc-in [:subjects identifier] registers)
                                                registers))))}))
 
-(defn- token-of [link] (last (str/split link #"/")))
 
 ;; --- construction ---------------------------------------------------------
 
@@ -129,7 +130,7 @@
         inner    (store/in-memory {})
         token    (str/join (repeat 43 "C"))
         ceremony (ceremony/ceremony
-                  {:store      (support/recording inner log)
+                  {:store      (abt/recording inner log)
                    :deliver!   (fn [_ _])
                    :link       {:base-url "https://x.test" :redeem-path "/entrar"}
                    :clock      (constantly 1000)
@@ -156,13 +157,13 @@
     (testing "the recorder really does record — without this an empty call list
               below is what a recorder that logs nothing would produce"
       (is (nil? (ceremony/issue! ceremony "known@x.test")))
-      (is (= [:put-challenge!] (support/calls log))))
-    (let [known-calls (support/calls log)
+      (is (= [:put-challenge!] (abt/calls log))))
+    (let [known-calls (abt/calls log)
           known-args  (first @log)]
       (reset! log [])
       (is (nil? (ceremony/issue! ceremony "unknown@x.test"))
           "an unknown identifier is answered with nothing at all, like a known one")
-      (let [unknown-calls (support/calls log)]
+      (let [unknown-calls (abt/calls log)]
         ;; The invariant. `subject-for` and `generation` would also THROW here,
         ;; so a module that asked and swallowed the answer still shows the
         ;; question.
@@ -204,8 +205,19 @@
           (str "and before anything was handed to deliver!: " label)))
     (is (nil? (ceremony/issue! ceremony "ada@x.test"))
         "control: an ordinary string still issues, so the refusals above are about the type")
-    (is (= [:put-challenge!] (support/calls log))
+    (is (= [:put-challenge!] (abt/calls log))
         "and that one did reach the store, which is what makes every empty log above mean something")))
+
+(deftest issue!-refuses-a-control-character-or-a-line-separator--before-anything-is-stored-or-sent
+  (let [{:keys [ceremony log deliveries]} (fixture {:subjects {"ada@x.test" {:id 1}}})]
+    (doseq [id ["victim@x.test\r\nBcc: a@evil.test" "a@x.test\u0000" "a\tb@x.test" "a@x.test\u0085" "a@x.test\u009b"
+                "a@x.test\u2028b" "a@x.test\u2029"]]
+      (is (= "auth-base: issue! takes an identifier with no control characters"
+             (try (ceremony/issue! ceremony id) nil (catch ExceptionInfo e (ex-message e))))
+          (str (pr-str id) ": refused")))
+    (is (= [[] []] [@log @deliveries]) "and nothing reached the store or the delivery")
+    (ceremony/issue! ceremony "ada@x.test")
+    (is (= [1 [:put-challenge!]] [(count @deliveries) (abt/calls log)]) "control: an ordinary address is issued")))
 
 (deftest the-default-rule-lower-cases-the-same-on-every-jvm-locale
   ;; The JVM's default locale is process-wide, so it is set and restored around the one
@@ -225,7 +237,7 @@
     (ceremony/issue! ceremony "  Ada@X.test ")
     (is (= "ada@x.test" (nth (first @log) 2))
         "the store was given the canonical form, not what was typed")
-    (is (= {:id 1} (ceremony/redeem! ceremony (token-of (second (first @deliveries)))))
+    (is (= {:id 1} (ceremony/redeem! ceremony (abt/token-of (second (first @deliveries)))))
         "so the link redeems to the account that already existed")
     (is (= [:subject-for "ada@x.test"] (last @log))
         "and the lookup used the canonical form too — normalised once, at both ends")
@@ -243,7 +255,7 @@
     (ceremony/issue! ceremony "  Ada@X.test ")
     (is (= "  Ada@X.test " (nth (first @log) 2))
         "a host that passes :normalise identity gets exactly what was typed")
-    (is (nil? (ceremony/redeem! ceremony (token-of (second (first @deliveries)))))
+    (is (nil? (ceremony/redeem! ceremony (abt/token-of (second (first @deliveries)))))
         "which is a different account from ada@x.test, and there is none")))
 
 (deftest a-delivery-that-throws-an-exception-is-logged-at-warn-by-domain-and-is-not-an-authentication-failure
@@ -257,7 +269,7 @@
                        (ceremony/issue! ceremony "ada@x.test"))
             entries  (lt/the-log)]
         (is (nil? returned) "the caller is told nothing")
-        (is (= [:put-challenge!] (support/calls log))
+        (is (= [:put-challenge!] (abt/calls log))
             "and the challenge was recorded before delivery was attempted")
         (is (= [[:warn "dev.arkaitz.auth-base.ceremony" thrown "auth-base: delivery failed for an address at x.test"]]
                (mapv (juxt :level (comp str :logger-ns) :throwable :message) entries))
@@ -289,14 +301,14 @@
                                   (catch Throwable t t)))
           "the Error reaches the caller untouched")
       (is (= [] (lt/the-log)) "and is not logged as a delivery failure"))
-    (is (= [:put-challenge!] (support/calls log)) "the challenge had been recorded before")))
+    (is (= [:put-challenge!] (abt/calls log)) "the challenge had been recorded before")))
 
 ;; --- redeem ---------------------------------------------------------------
 
 (deftest redeem!-yields-the-subject-once-and-a-malformed-token-never-reaches-the-store
   (let [{:keys [ceremony log deliveries]} (fixture {:subjects {"ada@x.test" {:id 1}}})]
     (ceremony/issue! ceremony "ada@x.test")
-    (let [token (token-of (second (first @deliveries)))]
+    (let [token (abt/token-of (second (first @deliveries)))]
       (is (= {:id 1} (ceremony/redeem! ceremony token))
           "the first redemption yields the subject — the witness for every nil below")
       (is (nil? (ceremony/redeem! ceremony token))
@@ -304,7 +316,7 @@
       (reset! log [])
       (is (nil? (ceremony/redeem! ceremony (str/join (repeat 43 "A"))))
           "a well-formed token the store never held yields nothing")
-      (is (= [:take-challenge!] (support/calls log))
+      (is (= [:take-challenge!] (abt/calls log))
           "control: a well-formed token does reach the store, so an empty log below means something")
       (doseq [[label value]
               [["nil"                    nil]
@@ -328,7 +340,7 @@
         ;; quietly stops testing the boundary.
         issue-at-1000 (fn [] (reset! clock 1000)
                         (ceremony/issue! ceremony "ada@x.test")
-                        (token-of (second (last @deliveries))))
+                        (abt/token-of (second (last @deliveries))))
         a (issue-at-1000)]
     (is (= 1500 (nth (first @log) 3))
         "precondition: issued at 1000 with a ttl of 500, so the boundary is 1500")
@@ -421,7 +433,7 @@
                   :registers minted-by-hook})
         redeem (fn [identifier]
                  (ceremony/issue! ceremony identifier)
-                 (let [token (token-of (second (last @deliveries)))]
+                 (let [token (abt/token-of (second (last @deliveries)))]
                    (reset! log [])
                    [(ceremony/redeem! ceremony token) token]))]
     ;; First, and in this same fixture with this same hook: without a witness
@@ -454,7 +466,7 @@
   (let [{:keys [ceremony log inner deliveries]}
         (fixture {:bootstrap [] :on-unknown (constantly nil)})]
     (ceremony/issue! ceremony "nobody@x.test")
-    (let [token (token-of (second (last @deliveries)))]
+    (let [token (abt/token-of (second (last @deliveries)))]
       (reset! log [])
       (is (nil? (ceremony/redeem! ceremony token))
           "a host that declines to register anyone is answered with nothing")
@@ -479,7 +491,7 @@
         (fixture {:bootstrap [] :registers minted-by-hook})
         never-held (str/join (repeat 43 "B"))]
     (ceremony/issue! ceremony "nobody@x.test")
-    (let [control (token-of (second (last @deliveries)))]
+    (let [control (abt/token-of (second (last @deliveries)))]
       (reset! log [])
       (is (= minted-by-hook (ceremony/redeem! ceremony control))
           "control: a valid token for this identifier does reach the hook")
@@ -488,7 +500,7 @@
           "control: so every absence below is an absence"))
     (reset! clock 1000)
     (ceremony/issue! ceremony "nobody@x.test")
-    (let [expired (token-of (second (last @deliveries)))]
+    (let [expired (abt/token-of (second (last @deliveries)))]
       ;; Checked before the index below, so a shorter entry — which is what a hook
       ;; called from somewhere it should not be would append — reds saying the log
       ;; holds something else, rather than throwing IndexOutOfBounds under a
@@ -549,7 +561,7 @@
       ;; The method names, not the whole entry: reading the token back out of the
       ;; log to put it in the expected value would compare it with itself, and
       ;; the claim here is about which questions were asked, not which token.
-      (is (= [:put-challenge!] (support/calls log))
+      (is (= [:put-challenge!] (abt/calls log))
           (str "and it asks one thing only — it looks nobody up and it registers nobody: " label))
       (is (= (some-> identifier str/trim str/lower-case) (nth (first @log) 2))
           (str "under the canonical spelling, as it always did: " label)))))
@@ -575,7 +587,7 @@
   (let [redeem-with (fn [options]
                       (let [{:keys [ceremony deliveries]} (fixture (assoc options :bootstrap []))]
                         (ceremony/issue! ceremony "nobody@x.test")
-                        (ceremony/redeem! ceremony (token-of (second (last @deliveries))))))]
+                        (ceremony/redeem! ceremony (abt/token-of (second (last @deliveries))))))]
     (is (= minted-by-hook (redeem-with {:registers minted-by-hook}))
         "control: an ordinary answer comes back, so the false below is not a nil wearing a costume")
     (is (false? (redeem-with {:registers false}))
@@ -596,7 +608,7 @@
                   :forbid     #{:subject-for}
                   :registers minted-by-hook})]
     (ceremony/issue! ceremony "ada@x.test")
-    (let [token (token-of (second (last @deliveries)))]
+    (let [token (abt/token-of (second (last @deliveries)))]
       (reset! log [])
       (is (thrown-with-msg? ExceptionInfo #"the test forbids :subject-for"
                             (ceremony/redeem! ceremony token))
@@ -616,19 +628,19 @@
         "the list is normalised when the ceremony is built, not compared raw")
     (ceremony/issue! ceremony "ADMIN@x.test")
     (is (= {:ab/identifier "admin@x.test" :ab/bootstrap? true}
-           (ceremony/redeem! ceremony (token-of (second (last @deliveries)))))
+           (ceremony/redeem! ceremony (abt/token-of (second (last @deliveries)))))
         "an administrator with no record anywhere enters, and says what they are")
     (is (nil? (store/subject-for inner "admin@x.test"))
         "and still has no record: entering created nothing (SPEC §12)")
     (is (= {"other@x.test" {:id 2}} (:subjects (deref (.-state inner))))
         "and the only account in the store is still the unrelated one it was seeded with")
     (ceremony/issue! ceremony "nobody@x.test")
-    (is (nil? (ceremony/redeem! ceremony (token-of (second (last @deliveries)))))
+    (is (nil? (ceremony/redeem! ceremony (abt/token-of (second (last @deliveries)))))
         "and an address that is neither known nor listed is nobody"))
   (let [{:keys [ceremony deliveries]}
         (fixture {:subjects {"admin@x.test" {:id 7}} :bootstrap ["admin@x.test"]})]
     (ceremony/issue! ceremony "admin@x.test")
-    (is (= {:id 7} (ceremony/redeem! ceremony (token-of (second (last @deliveries)))))
+    (is (= {:id 7} (ceremony/redeem! ceremony (abt/token-of (second (last @deliveries)))))
         "a record wins over the list: the absence of a record is the signal, not the list")))
 
 ;; --- revoke ---------------------------------------------------------------
@@ -651,6 +663,178 @@
       (ceremony/revoke! ceremony subject)
       (is (= 3 (ceremony/generation ceremony subject))
           (str "and each revocation advances by exactly one: " label)))))
+
+(defn- link!
+  "Issues a link for `identifier` through the fixture and answers its token."
+  [{:keys [ceremony deliveries]} identifier]
+  (ceremony/issue! ceremony identifier)
+  (abt/token-of (second (peek @deliveries))))
+
+(defn- rows [{:keys [inner]}] (set (keys (:challenges @(.-state inner)))))
+
+(deftest revoke!-ends-the-subjects-pending-links-and-no-others
+  (let [{:keys [ceremony] :as f} (fixture {:subjects {"ada@x.test" {:id 1} "ada@y.test" {:id 1} "bo@x.test" {:id 2}}})
+        a0 (link! f "ada@x.test")
+        a1 (link! f "ada@x.test")
+        a2 (link! f "ada@x.test")
+        y1 (link! f "ada@y.test")
+        b1 (link! f "bo@x.test")]
+    (is (= {:id 1} (ceremony/redeem! ceremony a0)) "witness: a link of the subject signs in before the revocation")
+    (is (= #{a1 a2 y1 b1} (rows f)) "witness: four links wait, two identifiers of one subject and another subject's")
+    (is (nil? (ceremony/revoke! ceremony {:id 1})) "revoke! answers nothing")
+    (is (= #{b1} (rows f)) "every link of the subject is gone, both identifiers', and the other subject's stays")
+    (is (= [nil nil nil] (mapv #(ceremony/redeem! ceremony %) [a1 a2 y1])) "none of them signs in")
+    (is (= {:id 2} (ceremony/redeem! ceremony b1)) "the other subject's still does")
+    (is (= {:id 1} (ceremony/redeem! ceremony (link! f "ada@x.test"))) "a link asked for after the revocation signs in")
+    (is (= [1 0] [(ceremony/generation ceremony {:id 1}) (ceremony/generation ceremony {:id 2})])
+        "and the subject's generation moved by exactly one, the other's not at all"))
+  (let [{:keys [ceremony log] :as f} (fixture {:subjects {"  Ada@X.test " {:id 1}}})]
+    (link! f "ada@x.test")
+    (reset! log [])
+    (ceremony/revoke! ceremony {:id 1})
+    (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:bump-generation! {:id 1}]] @log)
+        "an identifier the store holds as it was typed is dropped in the ceremony's normal form, the one challenges are stored in")
+    (is (= #{} (rows f)) "so its link is gone")))
+
+(deftest revoke!-of-a-bootstrap-subject-drops-its-own-link-and-never-asks-the-store-who-it-is
+  (let [{:keys [ceremony log] :as f} (fixture {:bootstrap ["  Admin@X.test "] :forbid #{:identifiers-of}})
+        admin {:ab/identifier "admin@x.test" :ab/bootstrap? true}]
+    (is (= ["the test forbids :identifiers-of" [[:identifiers-of {:id 9}]]]
+           (try (ceremony/revoke! ceremony {:id 9}) nil (catch ExceptionInfo e [(ex-message e) (take 1 @log)])))
+        "control: an ordinary subject's revocation asks, so the forbid is armed and recorded")
+    (reset! log [])
+    (is (= ["the test forbids :identifiers-of" [[:identifiers-of {:ab/identifier "admin@x.test"}]]]
+           (try (ceremony/revoke! ceremony {:ab/identifier "admin@x.test"}) nil
+                (catch ExceptionInfo e [(ex-message e) (take 1 @log)])))
+        "control: a map carrying an identifier but not the bootstrap flag is asked about like any subject")
+    (let [l (link! f "ADMIN@x.test")]
+      (is (= admin (ceremony/subject-of ceremony "admin@x.test")) "witness: the address is a bootstrap identity")
+      (reset! log [])
+      (is (nil? (ceremony/revoke! ceremony admin)) "revoking it does not throw: the store is not asked")
+      (is (= [[:drop-challenges! ["admin@x.test"]] [:bump-generation! admin]] @log)
+          "its own identifier is dropped, and then its generation moves")
+      (is (= [#{} nil] [(rows f) (ceremony/redeem! ceremony l)]) "its link is gone and does not sign in")
+      (is (= 1 (ceremony/generation ceremony admin)) "its sessions end")
+      (is (= admin (ceremony/redeem! ceremony (link! f "admin@x.test"))) "and a new link works"))))
+
+(deftest revoke!-drops-before-it-bumps--and-a-drop-that-fails-still-bumps-and-throws
+  (let [{:keys [ceremony log] :as f} (fixture {:subjects {"ada@x.test" {:id 1}}})]
+    (link! f "ada@x.test")
+    (reset! log [])
+    (ceremony/revoke! ceremony {:id 1})
+    (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:bump-generation! {:id 1}]] @log)
+        "asked who, dropped the links, then moved the generation: once each, in that order"))
+  (let [{:keys [ceremony log] :as f} (fixture {:subjects {"ada@x.test" {:id 1}} :forbid #{:drop-challenges!}})
+        l (link! f "ada@x.test")]
+    (reset! log [])
+    (is (= ["the test forbids :drop-challenges!" {:call [:drop-challenges! ["ada@x.test"]]}]
+           (try (ceremony/revoke! ceremony {:id 1}) nil (catch ExceptionInfo e [(ex-message e) (ex-data e)])))
+        "a drop that fails reaches the caller as the store threw it")
+    (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:bump-generation! {:id 1}]] @log)
+        "and the generation still moved, after it")
+    (is (= 1 (ceremony/generation ceremony {:id 1})) "so every session of the subject ends")
+    (is (= {:id 1} (ceremony/redeem! ceremony l)) "witness: the drop really did not happen — the link survived it")))
+
+(deftest ceremony-refuses-a-store-that-implements-Store-but-not-Challenges--naming-:store-and-the-protocol
+  (let [store-only (reify store/Store
+                     (put-challenge! [this _ _ _] this)
+                     (take-challenge! [_ _] nil)
+                     (subject-for [_ _] nil)
+                     (generation [_ _] 0)
+                     (bump-generation! [_ _] 1))
+        both       (reify
+                     store/Store
+                     (put-challenge! [this _ _ _] this)
+                     (take-challenge! [_ _] nil)
+                     (subject-for [_ _] nil)
+                     (generation [_ _] 0)
+                     (bump-generation! [_ _] 1)
+                     store/Challenges
+                     (identifiers-of [_ _] [])
+                     (drop-challenges! [_ _] 0))]
+    (is (= [(str "auth-base ceremony: :store must implement dev.arkaitz.auth-base.store/Challenges too (since 0.8.0),"
+                 " so a revocation can end the links its subject has not used")
+            [:store] (class store-only)]
+           (try (ceremony/ceremony (assoc valid :store store-only)) nil
+                (catch ExceptionInfo e [(ex-message e) (:config-key (ex-data e)) (:value (ex-data e))])))
+        "a Store without Challenges is refused, naming the protocol it lacks")
+    (is (map? (ceremony/ceremony (assoc valid :store both))) "control: the same store with Challenges builds")))
+
+(defn- parked-after-first-write
+  "`inner`, whose first `drop-challenges!` or `bump-generation!` completes and is then
+  held until `:release` (or a ten-second guard; `:exit` says which): the first act of a
+  revocation done, the second not begun."
+  [inner]
+  (let [fired    (AtomicBoolean. false)
+        released (CountDownLatch. 1)
+        arrived  (promise)
+        exit     (promise)
+        hold!    (fn [] (when (.compareAndSet fired false true)
+                          (deliver arrived true)
+                          (deliver exit (if (.await released 10 TimeUnit/SECONDS) :released :guard-expired))))]
+    {:store   (reify
+                store/Store
+                (put-challenge! [this t i e] (store/put-challenge! inner t i e) this)
+                (take-challenge! [_ t] (store/take-challenge! inner t))
+                (subject-for [_ i] (store/subject-for inner i))
+                (generation [_ s] (store/generation inner s))
+                (bump-generation! [_ s] (let [g (store/bump-generation! inner s)] (hold!) g))
+                store/Challenges
+                (identifiers-of [_ s] (store/identifiers-of inner s))
+                (drop-challenges! [_ ids] (let [n (store/drop-challenges! inner ids)] (hold!) n)))
+     :arrived arrived
+     :exit    exit
+     :release #(.countDown released)}))
+
+(defn- revoke-race
+  "Runs `(revoke ceremony {:id 1})` parked between its two acts, and meanwhile the two
+  reads a sign-in makes — redeem the link issued before, then read the generation the
+  new session would carry."
+  [revoke]
+  (let [log        (atom [])
+        inner      (store/in-memory {:subjects {"ada@x.test" {:id 1}} :clock (constantly 1000)})
+        {:keys [store arrived exit release]} (parked-after-first-write (abt/recording inner log))
+        box        (abt/mailbox)
+        c          (ceremony/ceremony {:store store :deliver! (abt/deliver-into box) :clock (constantly 1000)
+                                       :link {:base-url "https://x.test" :redeem-path "/entrar"}})
+        _          (ceremony/issue! c "ada@x.test")
+        l          (abt/token-of (abt/last-link box "ada@x.test"))
+        _          (reset! log [])
+        revoking   (future (revoke c {:id 1}))
+        parked?    (not= ::hang (deref arrived 10000 ::hang))
+        redemption (when parked? (try [:ok (ceremony/redeem! c l)] (catch Throwable t [:threw t])))
+        generation (when parked? (ceremony/generation c {:id 1}))]
+    (release)
+    {:parked?    parked?
+     :exit       (deref exit 1000 ::none)
+     :revoked    (deref revoking 20000 ::hang)
+     :redemption redemption
+     :generation generation
+     :token      l
+     :log        @log}))
+
+(deftest a-redemption-that-starts-between-the-drop-and-the-bump-finds-no-link
+  ;; Out of reach of any order inside revoke!, and so not claimed: a redemption that took
+  ;; its link BEFORE the revocation began and reads the generation after it.
+  (let [{:keys [parked? exit revoked redemption generation token log]} (revoke-race ceremony/revoke!)]
+    (is (and parked? (= :released exit)) (str "witness: the revocation was held between its acts and let go: " exit))
+    (is (nil? revoked) "and finished")
+    (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:take-challenge! token] [:generation {:id 1}]
+            [:bump-generation! {:id 1}]]
+           log)
+        "witness: the redemption ran between the drop and the bump")
+    (is (= [[:ok nil] 0] [redemption generation]) "and found no link, so no session was born to outlive the bump")))
+
+(deftest the-other-order-lets-that-redemption-sign-in-with-the-new-generation--under-this-harness
+  (let [naive (fn [c subject]
+                (let [st (:store c)]
+                  (store/bump-generation! st subject)
+                  (store/drop-challenges! st (map (:normalise c) (store/identifiers-of st subject)))))
+        {:keys [parked? exit redemption generation]} (revoke-race naive)]
+    (is (and parked? (= :released exit)) "the harness parked and released")
+    (is (= [[:ok {:id 1}] 1] [redemption generation])
+        (str "bump then drop: the link signs in and the session would carry the generation the revocation just set,"
+             " so no revocation ends it — if this ever goes to nil, the harness holds nowhere and the test above means nothing"))))
 
 (deftest normalise-answers-the-exact-form-the-store-and-the-hook-are-handed--default-and-host-rule--through-the-facade
   ;; The oracle is what the store and the hook were handed, never `normalise` compared
@@ -695,7 +879,7 @@
                                     answers)})]
         (reset! box inner)
         (ceremony/issue! ceremony "nobody@x.test")
-        (let [token (token-of (second (last @deliveries)))
+        (let [token (abt/token-of (second (last @deliveries)))
               e     (try (ceremony/redeem! ceremony token) nil (catch ExceptionInfo e e))]
           (is (= {:config-key [:on-unknown]} (ex-data e)) (str label ": refused, naming the key"))
           (is (str/includes? (str (ex-message e)) "could never be revoked") (str label ": and why"))
@@ -708,7 +892,7 @@
 (deftest an-ordinary-sign-in-never-pays-the-check
   (let [{:keys [ceremony log deliveries]} (fixture {:subjects {"ada@x.test" {:id 1}} :registers minted-by-hook})]
     (ceremony/issue! ceremony "ada@x.test")
-    (let [token (token-of (second (last @deliveries)))]
+    (let [token (abt/token-of (second (last @deliveries)))]
       (reset! log [])
       (is (= {:id 1} (ceremony/redeem! ceremony token)))
       (is (= [[:take-challenge! token] [:subject-for "ada@x.test"]] @log)
@@ -722,7 +906,7 @@
     (is (nil? (ceremony/issue! ceremony "ada@x.test"))
         "issued at 1000 with a ttl of Long/MAX_VALUE, and issue! returned — it did not throw")
     (is (= 1 (count @deliveries)) "the link was delivered")
-    (let [token (token-of (second (first @deliveries)))]
+    (let [token (abt/token-of (second (first @deliveries)))]
       (is (= [[:put-challenge! token "ada@x.test" Long/MAX_VALUE]] @log)
           "one challenge, stored under the delivered token, expiring at the last instant a long holds")
       (reset! clock (dec Long/MAX_VALUE))
@@ -751,7 +935,7 @@
       (is (= [3 3] (mapv count @deliveries)) "each delivery got three arguments")
       (is (nil? r1) "issue! with no request hands nil as the third")
       (is (identical? marker r2) "and with one, that very value"))
-    (is (= [:put-challenge! :put-challenge!] (support/calls log)) "the store was asked for nothing else")))
+    (is (= [:put-challenge! :put-challenge!] (abt/calls log)) "the store was asked for nothing else")))
 
 (deftest a-two-arity-deliver!-is-called-with-two-arguments-and-nothing-is-logged
   (let [deliveries (atom [])

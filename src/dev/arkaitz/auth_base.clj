@@ -107,7 +107,7 @@
 ;; --- Mounting (SPEC §3, §14) ---------------------------------------------
 
 (def handlers
-  "`(handlers ceremony opts)` → `{:paths … :form … :issue … :redeem … :logout …}`."
+  "`(handlers ceremony opts)` → `{:paths … :form … :issue … :confirm … :redeem … :logout …}`."
   handlers/handlers)
 
 (def routes
@@ -116,7 +116,8 @@
 
 (def unauthorized
   "`(unauthorized ceremony)` → the `401` with `WWW-Authenticate` that web-base
-  declines to emit, for a host mounting this module for an API."
+  declines to emit, for a host mounting this module for an API;
+  `(unauthorized ceremony \"Bearer realm=\\\"api\\\"\")` names another scheme."
   handlers/unauthorized)
 
 ;; --- What ships so the harness needs no infrastructure (SPEC §7, §11) -----
@@ -130,3 +131,9 @@
   "`(fixed-window {:limit n :window-ms n})` → the rate limiter that ships with
   the library, for a host that wants it somewhere other than on `:issue`."
   rate-limit/fixed-window)
+
+(def fixed-window-decider
+  "`(fixed-window-decider {:limit n :window-ms n})` → the same limiter answering
+  `{:allowed? bool :retry-after-ms n}`: what a host's own 429 needs for `Retry-After`,
+  and a value `:rate-limit` also takes as a function."
+  rate-limit/fixed-window-decider)
