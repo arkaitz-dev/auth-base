@@ -6,7 +6,7 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.9.0 — unreleased
+## 0.9.0 — 2026-09-29
 
 - **Breaking:** auth-base is a web-base plugin (the user's decision of 2026-09-29, SPEC
   §3): it declares `dev.arkaitz/web-base 0.11.0`, so a consumer receives web-base and
