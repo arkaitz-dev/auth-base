@@ -20,7 +20,7 @@
 
 (def ^:private random (delay (SecureRandom.)))
 
-(def ^:private encoder (.withoutPadding (Base64/getUrlEncoder)))
+(def ^:private ^java.util.Base64$Encoder encoder (.withoutPadding (Base64/getUrlEncoder)))
 
 (defn mint
   "A fresh token. 256 bits is far past the point where guessing is the attack

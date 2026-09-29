@@ -540,3 +540,39 @@
         (is (= [] (vec (remove #(or (contains? (set (:paths deps)) %) (lib-of %)) entries)))
             (str "SPEC §3: arrived on every consumer's classpath and is not accepted — decide it,"
                  " with its reason, in accepted-closure above"))))))
+
+;; --- no reflection ------------------------------------------------------------
+
+(defn- reflection-warnings
+  "The reflection warnings a fresh JVM on this classpath prints while it compiles each
+  file of `paths` — a child, so recompiling the module cannot redefine what the other
+  tests of this run hold. Bounded: past two minutes the child is destroyed and the
+  answer says so."
+  [paths]
+  (let [code (str "(doseq [p " (pr-str (vec paths)) "] (binding [*warn-on-reflection* true] (load-file p)))")
+        proc (-> (ProcessBuilder. ^java.util.List [(str (System/getProperty "java.home") "/bin/java")
+                                                   "-cp" (System/getProperty "java.class.path")
+                                                   "clojure.main" "-e" code])
+                 (.redirectErrorStream true)
+                 (.start))
+        out  (future (slurp (.getInputStream proc)))]
+    (.close (.getOutputStream proc))
+    (if (.waitFor proc 120 java.util.concurrent.TimeUnit/SECONDS)
+      {:exit (.exitValue proc) :warnings (filterv #(str/starts-with? % "Reflection warning") (str/split-lines @out))}
+      (do (.destroyForcibly proc) {:exit ::timed-out :warnings nil}))))
+
+(deftest no-namespace-of-src-calls-a-method-by-reflection
+  ;; A reflective call works on a JVM and fails in a native image the moment it runs,
+  ;; unless the host's reachability metadata happens to list it. token.clj's encoder was
+  ;; one from the first release, covered only by the template's recorded metadata.
+  (let [probe (File/createTempFile "reflection-probe" ".clj")]
+    (try
+      (spit probe "(ns reflection-probe) (defn f [x] (.getName x))")
+      (let [{:keys [exit warnings]} (reflection-warnings [(.getPath probe)])]
+        (is (= [0 1] [exit (count warnings)])
+            (str "control: an untyped call is reported, so a clean result below is a scan that looks: " exit " " warnings)))
+      (finally (.delete probe))))
+  (let [files (map (fn [[_ ^File f]] (.getPath f)) (sort (source-files (src-root))))
+        {:keys [exit warnings]} (reflection-warnings files)]
+    (is (<= 11 (count files)) (str "precondition: the module's sources were found: " (count files)))
+    (is (= [0 []] [exit warnings]) "every call in src is resolved at compile time")))
