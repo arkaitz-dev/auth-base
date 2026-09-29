@@ -1,0 +1,73 @@
+/* auth-base's standard sign-in and sign-out (since 0.9.0).
+ *
+ * Every colour and measure is an --ab-* custom property, and each defaults to
+ * web-base's --wb-* one, so a host that rebrands web-base rebrands these pages too.
+ * A host redefines an --ab-* property, or restyles an ab-* class, in its own
+ * :stylesheets, which web-base links after this file. */
+
+:root {
+  --ab-bg: var(--wb-bg);
+  --ab-text: var(--wb-text);
+  --ab-muted: var(--wb-muted);
+  --ab-border: var(--wb-border);
+  --ab-accent: var(--wb-accent);
+  --ab-danger: var(--wb-danger);
+  --ab-gap: var(--wb-gap);
+  --ab-radius: 0.375rem;
+  --ab-measure: 26rem;
+}
+
+.ab { max-width: var(--ab-measure); }
+
+.ab-title { margin: 0 0 var(--ab-gap); }
+
+.ab-notice {
+  margin: 0 0 var(--ab-gap);
+  padding: calc(var(--ab-gap) / 2) var(--ab-gap);
+  border-left: 3px solid var(--ab-accent);
+  border-radius: var(--ab-radius);
+}
+
+.ab-notice-ok { border-color: var(--ab-accent); }
+
+.ab-notice-error { border-color: var(--ab-danger); color: var(--ab-danger); }
+
+.ab-form {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--ab-gap) / 2);
+}
+
+.ab-label { font-weight: 600; }
+
+.ab-input {
+  font: inherit;
+  padding: 0.5em 0.75em;
+  border: 1px solid var(--ab-border);
+  border-radius: var(--ab-radius);
+  background: var(--ab-bg);
+  color: var(--ab-text);
+}
+
+.ab-input:focus { outline: 2px solid var(--ab-accent); outline-offset: 1px; }
+
+.ab-submit {
+  align-self: flex-start;
+  font: inherit;
+  padding: 0.5em 1em;
+  border: 1px solid var(--ab-accent);
+  border-radius: var(--ab-radius);
+  background: var(--ab-accent);
+  color: var(--ab-bg);
+  cursor: pointer;
+}
+
+.ab-note { margin: var(--ab-gap) 0 0; color: var(--ab-muted); font-size: 0.9rem; }
+
+.ab-sign-out { display: inline-flex; gap: calc(var(--ab-gap) / 2); margin: 0; }
+
+.ab-sign-out .ab-submit { padding: 0.25em 0.75em; }
+
+.ab-everywhere { background: transparent; color: var(--ab-accent); }
+
+.ab-sign-in { color: var(--ab-accent); }

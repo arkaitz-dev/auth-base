@@ -50,8 +50,11 @@
   of every file, so a scan of its own says it below (added 2026-09-22, when the
   first host asked). `next` is the optional JDBC store's `next.jdbc`, and **only
   `dev.arkaitz.auth-base.jdbc` may name it** — drawn the same way, by a scan of its own
-  below (2026-09-25, from four hosts that each wrote the store)."
-  #{"clojure" "ring" "integrant" "next" "dev.arkaitz.auth-base"})
+  below (2026-09-25, from four hosts that each wrote the store). `dev.arkaitz.web-base`
+  is the root this module is a plugin of (2026-09-29, the user's decision), and **only
+  `dev.arkaitz.auth-base.web` and `.testing` may name it**, by a scan of its own below:
+  the ceremony stays liftable."
+  #{"clojure" "ring" "integrant" "next" "dev.arkaitz.web-base" "dev.arkaitz.auth-base"})
 
 (defn- src-root
   "The src directory, located through the classpath so a different working
@@ -297,6 +300,48 @@
         (str "SPEC §14: only " jdbc-exempt-ns " may name next.jdbc, and nothing may require that"
              " namespace — the facade and the Integrant key included"))))
 
+(def ^:private web-exempt-paths #{"dev/arkaitz/auth_base/web.clj" "dev/arkaitz/auth_base/testing.clj"})
+(def ^:private web-ns 'dev.arkaitz.auth-base.web)
+
+(defn- web-base-in
+  "What ties a source to web-base: a require rooted there — prefix lists included — a
+  symbol or keyword qualified by one of its namespaces, or this module's own `web`
+  namespace named at all, which would bring web-base with it. `:wb/…` keywords are route
+  data any reitit host ignores, and never count."
+  [text]
+  (let [forms     (forms-in text)
+        web-base? (fn [n] (and n (or (= n "dev.arkaitz.web-base") (str/starts-with? n "dev.arkaitz.web-base."))))
+        required  (filter #(or (web-base? (str %)) (= web-ns %)) (required-namespaces (first forms)))
+        qualified (filter (fn [x] (and (or (symbol? x) (keyword? x))
+                                       (or (web-base? (namespace x)) (= (str web-ns) (namespace x)))))
+                          (mapcat walk-with-tags forms))]
+    (vec (distinct (concat required qualified)))))
+
+(deftest only-the-web-and-testing-namespaces-reference-web-base
+  (testing "positive controls"
+    (is (= '[dev.arkaitz.web-base.security] (web-base-in "(ns x (:require [dev.arkaitz.web-base.security :as s]))"))
+        "a plain require")
+    (is (= '[dev.arkaitz.web-base.security] (web-base-in "(ns x (:require [dev.arkaitz.web-base [security :as s]]))"))
+        "a prefix-list require")
+    (is (= '[dev.arkaitz.web-base/handler] (web-base-in "(ns x) (defn f [c] (dev.arkaitz.web-base/handler c))"))
+        "a qualified call")
+    (is (= [web-ns] (web-base-in (str "(ns x (:require [" web-ns "]))")))
+        "and this module's web namespace named from elsewhere, which would bring web-base along"))
+  (testing "controls: what must not fire"
+    (is (= [] (web-base-in "(ns x) (def r [\"/x\" {:wb/log-path :template}])")) "web-base's route-data keyword")
+    (is (= [] (web-base-in "(ns x (:require [dev.arkaitz.auth-base.session :as s]))")) "this module itself"))
+  (let [files (source-files (src-root))]
+    (is (every? #(contains? files %) web-exempt-paths)
+        (str "precondition: the exempt files are where their names say — found " (sort (keys files))))
+    (is (= '[dev.arkaitz.web-base.security]
+           (filterv #{'dev.arkaitz.web-base.security} (web-base-in (slurp (get files "dev/arkaitz/auth_base/web.clj")))))
+        "the web namespace does reference web-base, read from disk")
+    (is (= [] (vec (for [[path file] (sort (apply dissoc files web-exempt-paths))
+                         offender    (web-base-in (slurp file))]
+                     [path offender])))
+        (str "SPEC §3: only " web-ns " and the testing namespace may name web-base — the ceremony,"
+             " the handlers, the session, the stores and the facade run under any Ring host"))))
+
 (defn- testing-refs
   "Every place `text` names the testing namespace: a require, a prefix list's
   `[dev.arkaitz.auth-base [testing …]]`, or a qualified symbol."
@@ -486,7 +531,43 @@
     ;; Decided 2026-09-28 (SPEC §3, §8): the facade §8's one log line goes through,
     ;; which web-base already brings to every host of the set. No dependency of its
     ;; own and no backend.
-    org.clojure/tools.logging                    "SPEC §8's delivery-failure line"})
+    org.clojure/tools.logging                    "SPEC §8's delivery-failure line"
+    ;; Decided 2026-09-29 by the user: auth-base is a web-base plugin, so a consumer
+    ;; receives web-base and everything web-base brings — which every host of the set
+    ;; already had. Only `web` and `testing` load it; a scan above says so.
+    dev.arkaitz/web-base                         "the root this module is a plugin of"
+    com.taoensso/tempura                         "web-base's"
+    hiccup/hiccup                                "web-base's"
+    metosin/reitit-ring                          "web-base's"
+    metosin/reitit-core                          "web-base's"
+    meta-merge/meta-merge                        "web-base's"
+    ring/ring-anti-forgery                       "web-base's"
+    ring/ring-jetty-adapter                      "web-base's"
+    org.ring-clojure/ring-jakarta-servlet        "web-base's"
+    com.taoensso/encore                          "web-base's"
+    com.taoensso/truss                           "web-base's"
+    org.clojure/tools.reader                     "web-base's"
+    org.slf4j/slf4j-api                          "web-base's"
+    org.eclipse.jetty/jetty-server               "web-base's"
+    org.eclipse.jetty/jetty-unixdomain-server    "web-base's"
+    org.eclipse.jetty/jetty-http                 "web-base's"
+    org.eclipse.jetty/jetty-io                   "web-base's"
+    org.eclipse.jetty/jetty-util                 "web-base's"
+    org.eclipse.jetty/jetty-security             "web-base's"
+    org.eclipse.jetty/jetty-session              "web-base's"
+    org.eclipse.jetty/jetty-xml                  "web-base's"
+    org.eclipse.jetty.ee/jetty-ee-webapp         "web-base's"
+    org.eclipse.jetty.ee9/jetty-ee9-servlet      "web-base's"
+    org.eclipse.jetty.ee9/jetty-ee9-nested       "web-base's"
+    org.eclipse.jetty.ee9/jetty-ee9-security     "web-base's"
+    org.eclipse.jetty.ee9/jetty-ee9-webapp       "web-base's"
+    org.eclipse.jetty.ee9.websocket/jetty-ee9-websocket-jetty-server"web-base's"
+    org.eclipse.jetty.ee9.websocket/jetty-ee9-websocket-jetty-api"web-base's"
+    org.eclipse.jetty.ee9.websocket/jetty-ee9-websocket-jetty-common"web-base's"
+    org.eclipse.jetty.ee9.websocket/jetty-ee9-websocket-servlet"web-base's"
+    org.eclipse.jetty.toolchain/jetty-jakarta-servlet-api"web-base's"
+    org.eclipse.jetty.websocket/jetty-websocket-core-common"web-base's"
+    org.eclipse.jetty.websocket/jetty-websocket-core-server"web-base's"})
 
 (defn- maven-entry-pattern [lib]
   (let [group    (namespace lib)
@@ -525,9 +606,11 @@
         lib-of       (fn [entry] (first (for [lib (keys accepted-closure)
                                               :when (re-find (maven-entry-pattern lib) entry)]
                                           lib)))]
-    (is (= '#{org.clojure/clojure ring/ring-core integrant/integrant org.clojure/tools.logging} declared)
+    (is (= '#{org.clojure/clojure ring/ring-core integrant/integrant org.clojure/tools.logging
+              dev.arkaitz/web-base}
+           declared)
         (str "SPEC §3: deps.edn declares the language, ring-core, the Integrant that only"
-             " the optional namespace may load, and the logging facade — found " (sort declared)))
+             " the optional namespace may load, the logging facade and web-base — found " (sort declared)))
     (when (is (nil? error) (str "precondition: the consumer's classpath was resolved — " error))
       (let [received (set (keep lib-of entries))]
         (testing "controls: the resolution is a consumer's, not this test run's"
@@ -535,8 +618,8 @@
               (str "every declared dependency is recognised on it: " (sort received)))
           (is (contains? received 'weavejester/dependency)
               "a transitive dependency is received, so an empty remainder below means something")
-          (is (not-any? #(str/includes? % "/dev/arkaitz/web-base/") entries)
-              "web-base is on :test and not here, so no alias was applied"))
+          (is (not-any? #(str/includes? % "/ring/ring-mock/") entries)
+              "ring-mock is on :test and not here, so no alias was applied"))
         (is (= [] (vec (remove #(or (contains? (set (:paths deps)) %) (lib-of %)) entries)))
             (str "SPEC §3: arrived on every consumer's classpath and is not accepted — decide it,"
                  " with its reason, in accepted-closure above"))))))

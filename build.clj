@@ -17,10 +17,9 @@
   (b/delete {:path "target"}))
 
 (defn jar
-  "The library jar from src only. Both proofs — the ring-only harness and the
-  web-base demo — live on their own alias paths and must never end up inside
-  the artifact: a consumer that gets web-base through this jar has exactly the
-  dependency SPEC §3 forbids."
+  "The library jar from src and resources — the standard pages' stylesheet. Both
+  proofs, the ring-only harness and the demo, live on their own alias paths and never
+  end up inside the artifact."
   [_]
   (clean nil)
   (b/write-pom {:class-dir class-dir
@@ -28,17 +27,18 @@
                 :version   version
                 :basis     (basis)
                 :src-dirs  ["src"]
+                :resource-dirs ["resources"]
                 :scm       {:url                 url
                             :connection          (str "scm:git:" url ".git")
                             :developerConnection (str "scm:git:" url ".git")
                             :tag                 (str "v" version)}
-                :pom-data  [[:description "Authentication as a liftable module: issue a challenge, redeem it once, hand back a subject. Depends on ring-core, and on Integrant only for the one optional namespace that ships its key."]
+                :pom-data  [[:description "Magic-link authentication as a web-base plugin: issue a challenge, redeem it once, hand back a subject, with a standard, brandable sign-in. The ceremony itself runs under any Ring host."]
                             [:url url]
                             [:licenses
                              [:license
                               [:name "MIT License"]
                               [:url "https://opensource.org/license/mit"]]]]})
-  (b/copy-dir {:src-dirs ["src"] :target-dir class-dir})
+  (b/copy-dir {:src-dirs ["src" "resources"] :target-dir class-dir})
   (b/jar {:class-dir class-dir :jar-file jar-file})
   (println "Built" jar-file))
 
