@@ -6,6 +6,12 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.8.1 — 2026-09-29
+
+- The token encoder is called without reflection: in a native image a sign-in worked
+  only where the host's reachability metadata happened to list it. Every call in src now
+  resolves at compile time, and a test says so.
+
 ## 0.8.0 — 2026-09-29
 
 - **Breaking:** opening a magic link no longer signs in. The GET renders the view in a
