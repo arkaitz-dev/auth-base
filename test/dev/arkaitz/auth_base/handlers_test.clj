@@ -31,7 +31,7 @@
   (:import [clojure.lang ExceptionInfo]))
 
 (defn- fixture
-  [{:keys [subjects forbid rate-limit views normalise keep-session with-request?]}]
+  [{:keys [subjects forbid rate-limit views normalise keep-session with-request? extra]}]
   (let [clock      (atom 1000)
         log        (atom [])
         deliveries (atom [])
@@ -59,7 +59,8 @@
                                        :after-login  "/home"
                                        :after-logout "/bye"}
                                 rate-limit   (assoc :rate-limit rate-limit)
-                                keep-session (assoc :keep-session keep-session))))))
+                                keep-session (assoc :keep-session keep-session)
+                                extra        (merge extra))))))
 
 
 (defn- post [handler identifier & {:keys [from]}]
@@ -447,6 +448,61 @@
     (is (= [:session nil] (find response :session))
         "the session is explicitly deleted, which `find` can tell from an absent key")))
 
+(deftest on-logout-is-handed-the-request-while-it-still-names-its-session
+  (let [seen (atom [])
+        {:keys [logout]} (fixture {:extra {:on-logout #(swap! seen conj (:session %))}})
+        response (logout (assoc (mock/request :post "/out") :session {:ab/subject {:id 1} :lang "eu"}))]
+    (is (= [{:ab/subject {:id 1} :lang "eu"}] @seen)
+        "called once, with the session the logout is about to delete")
+    (is (= [:session nil] (find response :session)) "and the session is deleted all the same")
+    (is (= "/bye" (get-in response [:headers "Location"])))))
+
+(defn- signed-in
+  "A request carrying the session a redemption of `identifier`'s link established."
+  [{:keys [redeem] :as f} identifier path]
+  (assoc (mock/request :post path)
+         :session (:session (redeem (mock/request :post (str "/entrar/" (issued! f identifier)))))))
+
+(deftest revoke-path-ends-every-session-of-the-subject--then-tells-the-host--then-ends-this-one
+  (let [seen (atom [])
+        subject-now (atom nil)
+        {:keys [revoke ceremony log] :as f}
+        (fixture {:subjects {"ada@x.test" {:id 1}}
+                  :extra    {:revoke-path "/everywhere"
+                             :on-revoke   (fn [request subject]
+                                            ;; What the host sees at that moment: the
+                                            ;; session in its hands already names nobody.
+                                            (swap! seen conj [subject (@subject-now request)]))}})
+        _        (reset! subject-now (session/subject-fn ceremony))
+        request  (signed-in f "ada@x.test" "/everywhere")
+        other    (signed-in f "ada@x.test" "/")
+        subject  (session/subject-fn ceremony)]
+    (is (= {:id 1} (subject request) (subject other)) "witness: both sessions name the subject before")
+    (let [response (revoke request)]
+      (is (= {:status 303 :headers {"Location" "/bye" "Cache-Control" "no-store"} :body ""}
+             (dissoc response :session)))
+      (is (= [:session nil] (find response :session)) "this session is deleted")
+      (is (= [nil nil] [(subject request) (subject other)])
+          "and every session of the subject, this one and another, names nobody any more")
+      (is (= [[{:id 1} nil]] @seen)
+          "on-revoke ran once, with the subject, after the revocation had taken effect"))
+    (reset! log [])
+    (reset! seen [])
+    (let [response (revoke request)]
+      (is (= [nil []] [(first (filter #{:bump-generation!} (abt/calls log))) @seen])
+          "a session already revoked names nobody: no second revocation, no call to the host")
+      (is (= [:session nil] (find response :session)) "yet it is still signed out"))))
+
+(deftest without-a-revoke-path-there-is-no-revoke-handler-and-no-route
+  (let [{:keys [ceremony] :as f} (fixture {})]
+    (is (= [false nil] [(contains? f :revoke) (get-in f [:paths :revoke])]))
+    (is (= ["/login" "/entrar/:token" "/out"]
+           (mapv first (handlers/routes ceremony {:view (fn [_ _]) :login-path "/login" :logout-path "/out"}))))
+    (let [routes (handlers/routes ceremony {:view (fn [_ _]) :login-path "/login" :revoke-path "/everywhere"})]
+      (is (= ["/login" "/entrar/:token" "/logout" "/everywhere"] (mapv first routes))
+          "with one, a POST route of its own")
+      (is (= #{:post} (set (keys (second (last routes)))))))))
+
 (deftest unauthorized-carries-the-www-authenticate-header-web-base-refuses-to-invent
   (let [{:keys [ceremony]} (fixture {})]
     (is (= {:status 401
@@ -471,6 +527,10 @@
              ["a login path with a fragment" {:view (fn [_ _]) :login-path "/login#form"} [[:login-path] "/login#form"]]
              ["a rate limit that is neither a map nor a fn"
               {:view (fn [_ _]) :login-path "/login" :rate-limit 5}          [[:rate-limit] 5]]
+             ["a relative logout path" {:view (fn [_ _]) :login-path "/login" :logout-path "out"} [[:logout-path] "out"]]
+             ["a revoke path with a query" {:view (fn [_ _]) :login-path "/login" :revoke-path "/r?x"} [[:revoke-path] "/r?x"]]
+             ["an on-logout that is no fn" {:view (fn [_ _]) :login-path "/login" :on-logout "x"} [[:on-logout] "x"]]
+             ["an on-revoke that is no fn" {:view (fn [_ _]) :login-path "/login" :on-revoke 1} [[:on-revoke] 1]]
              ["an option nobody reads"
               {:view (fn [_ _]) :login-path "/login" :ttl-ms 5}              [[:ttl-ms] nil]]]]
       (is (= expected

@@ -50,7 +50,8 @@
 (def ^:private default-field "identifier")
 
 (def ^:private handler-keys
-  #{:view :login-path :logout-path :after-login :after-logout :field :rate-limit :keep-session})
+  #{:view :login-path :logout-path :revoke-path :after-login :after-logout :field :rate-limit :keep-session
+    :on-logout :on-revoke})
 
 (defn- fail! [message config-key value]
   (throw (ex-info (str "auth-base handlers: " message)
@@ -187,15 +188,23 @@
   [ceremony identifier]
   (<= (count (ceremony/normalise ceremony identifier)) max-identifier-length))
 
+(defn- check-path! [k p]
+  ;; A query or fragment would be mounted as part of a path no request ever matches,
+  ;; and a form would post to it: nobody could sign in, and nothing says why.
+  (when-not (and (string? p) (str/starts-with? p "/") (not (re-find #"[?#]" p)))
+    (fail! (str k " must be a path starting with \"/\", with no query or fragment") [k] p)))
+
 (defn handlers
-  "The five handlers, as a map — the redemption path's GET is `:confirm`, its POST
-  `:redeem`. Mount them yourself, or hand the same options
-  to `routes`.
+  "The handlers, as a map — the redemption path's GET is `:confirm`, its POST
+  `:redeem`, and `:revoke` is there only under a `:revoke-path`. Mount them yourself,
+  or hand the same options to `routes`.
 
     :view          (fn [request state]) → a `:body` (required); every state
                    carries `:action` and `:field`, see the namespace docstring
     :login-path    where the form lives (required)
     :logout-path   where the logout POST goes (default \"/logout\")
+    :revoke-path   where a POST signs the subject out everywhere — `revoke!`, then this
+                   session ended — landing on `:after-logout` (default: no such route)
     :after-login   where a redeemed link lands (default \"/\")
     :after-logout  where a logout lands (default `:login-path`)
     :field         the form field holding the identifier (default \"identifier\")
@@ -217,12 +226,19 @@
                    source and lets it back in sooner. Under a host's function
                    it carries none, because that function says whether and
                    never when.
+    :on-logout     `(fn [request])`, called before a logout ends the session, while the
+                   request still names it: the host's own record of this device goes
+                   in the same act. Its answer is ignored; what it throws, throws
+    :on-revoke     `(fn [request subject])`, called after `revoke!` has moved the
+                   subject's generation — so a host's failure there never leaves a
+                   revocation undone — and before this session is ended
 
   The POST handler reads `:form-params`, so the host's stack must have parsed
   the body — `ring.middleware.params/wrap-params`, which web-base already
   applies. CSRF is the host's too, for the same reason: web-base has it, and a
   bare Ring host must bring it."
-  [ceremony {:keys [view login-path logout-path after-login after-logout field rate-limit keep-session]
+  [ceremony {:keys [view login-path logout-path revoke-path after-login after-logout field rate-limit
+                    keep-session on-logout on-revoke]
              :as   opts}]
   (when-let [unknown (not-empty (remove handler-keys (keys opts)))]
     (fail! (str "unknown option" (when (next unknown) "s") ": " (pr-str (vec (sort unknown)))
@@ -230,11 +246,12 @@
            (vec (sort unknown)) nil))
   (when-not (ifn? view)
     (fail! ":view must be a function of [request state]" [:view] view))
-  ;; A query or fragment would be mounted as part of a path no request ever matches,
-  ;; and the form's :action would post to it: nobody could sign in, and nothing says why.
-  (when-not (and (string? login-path) (str/starts-with? login-path "/")
-                 (not (re-find #"[?#]" login-path)))
-    (fail! ":login-path must be a path starting with \"/\", with no query or fragment" [:login-path] login-path))
+  (check-path! :login-path login-path)
+  (some->> logout-path (check-path! :logout-path))
+  (some->> revoke-path (check-path! :revoke-path))
+  (doseq [k [:on-logout :on-revoke]]
+    (when-not (or (nil? (get opts k)) (ifn? (get opts k)))
+      (fail! (str k " must be a function") [k] (get opts k))))
   ;; A key under :ab/ carried over would be a subject or a generation the session was
   ;; not established with: the redemption decides those, never the session before it.
   ;; ring-anti-forgery's token, carried over, would hand whoever planted the session
@@ -251,11 +268,14 @@
         field        (or field default-field)
         decide       (limiter ceremony rate-limit)
         redeem-path  (get-in ceremony [:link :redeem-path])
+        subject-of   (session/subject-fn ceremony)
+        signed-out   (fn [] (no-store (session/end (response/redirect after-logout :see-other))))
         sent         (no-store (response/redirect (str login-path "?ab=sent") :see-other))
         spent        (no-store (response/redirect (str login-path "?ab=spent") :see-other))
         blank        (no-store (response/redirect login-path :see-other))
         render       (fn [request state]
                        (view request (assoc state :action login-path :field field)))]
+    (cond->
     {:paths {:login login-path :logout logout-path :redeem (str redeem-path "/:token")}
 
      :form
@@ -327,20 +347,34 @@
              no-store)))
 
      :logout
-     (fn [_request]
-       (no-store (session/end (response/redirect after-logout :see-other))))}))
+     (fn [request]
+       (when on-logout (on-logout request))
+       (signed-out))}
+
+      revoke-path
+      (-> (assoc-in [:paths :revoke] revoke-path)
+          (assoc :revoke
+                 ;; The subject this session names, asked of the store as every request
+                 ;; asks it: a session already revoked names nobody, and revoking again
+                 ;; would end every session the subject has opened since.
+                 (fn [request]
+                   (when-some [subject (subject-of request)]
+                     (ceremony/revoke! ceremony subject)
+                     (when on-revoke (on-revoke request subject)))
+                   (signed-out)))))))
 
 (defn routes
   "The same handlers as reitit route data, so a host composes them with
   `(into (auth/routes ceremony opts) my-routes)`. This is data — vectors and
   maps — and costs no dependency: reitit is the host's, not this module's."
   [ceremony opts]
-  (let [{:keys [paths form issue confirm redeem logout]} (handlers ceremony opts)]
-    [[(:login paths)  {:get {:handler form} :post {:handler issue}}]
-     ;; The token is the path's last segment: web-base 0.9.0 and later log this route by
-     ;; its template instead. An earlier web-base, or any other reitit host, ignores it.
-     [(:redeem paths) {:wb/log-path :template :get {:handler confirm} :post {:handler redeem}}]
-     [(:logout paths) {:post {:handler logout}}]]))
+  (let [{:keys [paths form issue confirm redeem logout revoke]} (handlers ceremony opts)]
+    (cond-> [[(:login paths)  {:get {:handler form} :post {:handler issue}}]
+             ;; The token is the path's last segment: web-base 0.9.0 and later log this route by
+             ;; its template instead. An earlier web-base, or any other reitit host, ignores it.
+             [(:redeem paths) {:wb/log-path :template :get {:handler confirm} :post {:handler redeem}}]
+             [(:logout paths) {:post {:handler logout}}]]
+      revoke (conj [(:revoke paths) {:post {:handler revoke}}]))))
 
 (defn unauthorized
   "The `401` SPEC §14 asks this module for. web-base declines to emit one
