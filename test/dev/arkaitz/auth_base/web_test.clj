@@ -120,7 +120,7 @@
                                  :content  [:div#host-layout content]}))]
      {:box box
       :app (wb/handler {:session     {:key session-key}
-                        :i18n        {:default-locale :en :dict {:es {:ab {:title "Acceso"}}}}
+                        :i18n        {:default-locale :en :locales [:en :es] :dict {:es {:ab {:title "Acceso"}}}}
                         :stylesheets ["/host.css"]
                         :routes      [["/" {:get (fn [_] {:status 200 :body [:p "home"]})}]]
                         :plugins     [(web/plugin ceremony (merge {:layouts [layout]} opts))]})})))
@@ -164,6 +164,18 @@
     (is (= 5 (count @box)) "five links were sent, and the sixth request sent none")
     (is (str/includes? (:body (:response (last posts))) "data-ab-state=\"limited\"")
         "the 429 is the standard page in its limited state")))
+
+(deftest an-english-only-host-signs-a-spanish-browser-in-in-english
+  ;; Found live on the first host on both plugins, and fixed in web-base 0.12.0: the
+  ;; plugin's Spanish must not become a language of a site that did not list it.
+  (let [ceremony (auth/ceremony {:store (auth/in-memory-store) :deliver! (fn [_ _])
+                                 :link  {:base-url "https://x.test" :redeem-path "/login/redeem"}})
+        layout   (fn [{:keys [content request]}] (shell/page {:request request :content content}))
+        app  (wb/handler {:session {:key session-key} :i18n {:default-locale :en}
+                          :plugins [(web/plugin ceremony {:layouts [layout]})]})
+        body (:body (:response (wbt/visit (wbt/browser app) :get "/login" nil {:headers {"accept-language" "es"}})))]
+    (is (= ["en" "Sign in"] [(second (re-find #"<html lang=\"([^\"]*)\"" body))
+                             (second (re-find #"<h2 class=\"ab-title\">([^<]*)</h2>" body))]))))
 
 (deftest a-host-whose-default-locale-the-dictionary-lacks-reads-english-not-nothing
   (let [ceremony (auth/ceremony {:store (auth/in-memory-store) :deliver! (fn [_ _])
