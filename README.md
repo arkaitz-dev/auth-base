@@ -29,7 +29,7 @@ test belongs in the host.
 
 ```clojure
 ;; deps.edn — from Clojars
-dev.arkaitz/auth-base {:mvn/version "0.7.0"}
+dev.arkaitz/auth-base {:mvn/version "0.8.0"}
 
 ;; or straight from git, to track a commit
 dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
@@ -518,7 +518,7 @@ refused by name.
 ```
 clojure -M:test                       # the whole suite, both proofs included
 clojure -M:test -n <namespace>        # one namespace (several -n allowed)
-clojure -T:build jar                  # target/auth-base-0.7.0.jar
+clojure -T:build jar                  # target/auth-base-0.8.0.jar
 clojure -T:build install              # into ~/.m2
 CLOJARS_USERNAME=… CLOJARS_PASSWORD=<deploy token> clojure -T:build deploy
 ```

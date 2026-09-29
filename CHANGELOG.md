@@ -6,7 +6,7 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.8.0 — unreleased
+## 0.8.0 — 2026-09-29
 
 - **Breaking:** opening a magic link no longer signs in. The GET renders the view in a
   fifth state, `{:confirm? true}`, whose form posts to the link, and only that POST —
