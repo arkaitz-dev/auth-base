@@ -1,18 +1,14 @@
 (ns demo.app
   "The wiring, which is the whole point of this demo.
 
-  Read `handler` below and note what is **not** there: no middleware of
-  auth-base's in web-base's stack, no import of web-base in auth-base, no
-  shared configuration file, no registry either of them writes into. The host
-  holds both and hands each what it needs.
-
-  The one thing SPEC §3's five-line example does not show, because it is the
-  host's business rather than the module's: `auth/routes` returns a flat vector
-  of routes, and a host that wants its own shell on the login page nests them
-  under a parent that carries `:wb/layouts`. That is reitit's composition, not
-  anything either module has to agree on."
+  auth-base arrives as one value in web-base's `:plugins`: its routes, its standard
+  pages, its stylesheet, its dictionary, the subject function and the login path. The
+  host keeps what is its own — the layout the pages render inside, the paths, two
+  sentences of copy — and web-base merges the rest as data, calling nothing of
+  auth-base's on its own."
   (:require [demo.views :as views]
             [dev.arkaitz.auth-base :as auth]
+            [dev.arkaitz.auth-base.web :as auth-web]
             [dev.arkaitz.web-base :as wb]
             [dev.arkaitz.web-base.response :as response]))
 
@@ -32,29 +28,26 @@
                   :ttl-ms    (* 15 60 1000)
                   :bootstrap administrators}))
 
-(defn- own-routes [ceremony]
-  [["/" {:get {:handler #(response/ok (views/home %))}}]
-   ["/privado" {:wb/gate wb/subject-present?
-                :get {:handler #(response/ok (views/private %))}}]
-   ["/revocar" {:post {:handler (fn [request]
-                                  (when-let [subject (:wb/subject request)]
-                                    (auth/revoke! ceremony subject))
-                                  (response/see-other "/"))}}]])
+(def ^:private copy
+  "This demo's two sentences over auth-base's Spanish: where the link goes, and why the
+  answer never says whether an address has an account."
+  {:es {:ab {:sent-detail "En esta demo el enlace se imprime en la consola del servidor."
+             :note        (str "La respuesta es la misma se conozca o no la dirección: si no lo fuera,"
+                               " esta página diría quién tiene cuenta.")}}})
 
 (defn handler
   "auth-base and web-base, joined."
   [ceremony {:keys [session-key secure?]}]
   (wb/handler
-   {:routes       [["" {:wb/layouts [views/shell-layout]}
-                    (into (auth/routes ceremony {:view         views/login
-                                                 :login-path   "/entrar"
-                                                 :logout-path  "/salir"
-                                                 :after-login  "/privado"
-                                                 :after-logout "/"
-                                                 :rate-limit   {:limit 5 :window-ms (* 15 60 1000)}})
-                          (own-routes ceremony))]]
-    :subject-fn   (auth/subject-fn ceremony)
-    :login-path   "/entrar"
+   {:plugins      [(auth-web/plugin ceremony (merge views/auth-paths
+                                                    {:after-login  "/privado"
+                                                     :after-logout "/"
+                                                     :layouts      [views/shell-layout]}))]
+    :routes       [["" {:wb/layouts [views/shell-layout]}
+                    ["/" {:get {:handler #(response/ok (views/home %))}}]
+                    ["/privado" {:wb/gate wb/subject-present?
+                                 :get {:handler #(response/ok (views/private %))}}]]]
+    :i18n         {:default-locale :es :dict copy}
     :session      {:key session-key :cookie-attrs {:secure secure?}}
     :error-layout views/error-page
     :security     {:csp (str "default-src 'self'; script-src 'nonce-{nonce}'; style-src 'self'; "

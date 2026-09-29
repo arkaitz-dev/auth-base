@@ -1,70 +1,35 @@
 (ns demo.views
-  "The host's pages. Everything visible belongs here, which is the seam working:
-  auth-base asks for **one** function of `[request state]` and never learns what
-  a page is, what language this is in, or that web-base exists.
-
-  Note what the login view has to do that the module could not do for it: emit
-  web-base's CSRF field. The token lives in the session and belongs to the
-  host's stack, so a module that rendered its own form would either have to
-  know about ring-anti-forgery or leave every host with a 403."
-  (:require [dev.arkaitz.web-base.security :as security]
+  "The host's pages. The sign-in is auth-base's standard one, installed as a plugin in
+  `demo.app` and rendered inside `shell-layout` below; everything else visible is this
+  host's own. Its Spanish words are auth-base's dictionary, with two sentences of this
+  demo's put over it in `demo.app`."
+  (:require [dev.arkaitz.auth-base.web :as auth-web]
             [dev.arkaitz.web-base.shell :as shell]))
+
+(def auth-paths
+  "Where auth-base's routes are mounted: handed to the plugin, and to the identity slot
+  so its buttons post where the plugin listens."
+  {:login-path "/entrar" :logout-path "/salir" :revoke-path "/revocar"})
 
 (defn shell-layout
   "The outermost layout of every page, and an ordinary function of one slot map."
   [{:keys [content request] :as slots}]
   (shell/page
    (assoc slots
-          :title   (str (:title slots "auth-base") " · demo")
-          :header  [:strong "auth-base × web-base"]
-          :nav     [:span [:a {:href "/"} "Inicio"] " · " [:a {:href "/privado"} "Privado"]]
-          :identity (if-let [subject (:wb/subject request)]
-                      [:form {:method "post" :action "/salir"}
-                       (security/csrf-field request)
-                       [:span (str "sesión de " (pr-str subject)) " "]
-                       [:button {:type "submit"} "Salir"]]
-                      [:a {:href "/entrar"} "Entrar"])
-          :content content
-          :footer  [:small "El módulo no ha escrito ni una línea de esta página."])))
-
-(defn login
-  "The one view auth-base asks the host for. It is handed the request and one
-  of five states, and returns Hiccup — which web-base renders through the
-  layouts above, without auth-base knowing either of them exists. The form's
-  target and its input's name come from the state, never spelt here. Opening a link
-  shows `:confirm?`: one button, whose POST — carrying this session's CSRF token — is
-  what signs somebody in."
-  [request {:keys [sent? spent? limited? confirm? action field]}]
-  (if confirm?
-    (list [:h2 "Entrar"]
-          [:form {:method "post" :action action}
-           (security/csrf-field request)
-           [:button {:type "submit"} "Entrar"]])
-  (list
-   [:h2 "Entrar"]
-   (when sent?
-     [:p.ok [:strong "Si esa dirección existe, el enlace va de camino."]
-      " En esta demo el enlace se imprime en la consola del servidor."])
-   (when spent?
-     [:p.error [:strong "Ese enlace ya no vale."] " Se usa una sola vez y caduca."])
-   (when limited?
-     [:p.error [:strong "Demasiados intentos desde aquí."] " Espera un poco y vuelve a pedir el enlace."])
-   [:form {:method "post" :action action}
-    (security/csrf-field request)
-    [:label "Dirección "
-     [:input {:type "email" :name field :required true :autofocus true
-              :placeholder "ada@example.test"}]]
-    " "
-    [:button {:type "submit"} "Enviar enlace"]]
-   [:p [:small "La respuesta es la misma se conozca o no la dirección: si no lo fuera, "
-        "esta página diría quién tiene cuenta."]])))
+          :title    (str (:title slots "auth-base") " · demo")
+          :header   [:strong "auth-base × web-base"]
+          :nav      [:span [:a {:href "/"} "Inicio"] " · " [:a {:href "/privado"} "Privado"]]
+          :identity (list (when-let [subject (:wb/subject request)] [:span (str "sesión de " (pr-str subject)) " "])
+                          (auth-web/identity request auth-paths))
+          :content  content
+          :footer   [:small "La página de entrada es la estándar de auth-base, con dos frases de esta demo."])))
 
 (defn home [request]
   (list
    [:h2 "Una demo con web-base"]
    [:p "web-base sabe que hay un sujeto y jamás cómo llegó a serlo. auth-base celebra "
-    "la ceremonia y jamás sabe qué es una página. El cableado entre ambos son cinco "
-    "líneas, y están en " [:code "demo/src/demo/app.clj"] "."]
+    "la ceremonia y trae su página de entrada como un plugin: una línea de la "
+    "configuración, en " [:code "demo/src/demo/app.clj"] "."]
    (if (:wb/subject request)
      [:p "Ahora mismo eres alguien. " [:a {:href "/privado"} "Pasa a la página privada."]]
      [:p "Ahora mismo no eres nadie. " [:a {:href "/entrar"} "Entra."]])))
@@ -75,12 +40,9 @@
    [:p "Aquí solo llega un sujeto, y la puerta es de web-base: "
     [:code ":wb/gate wb/subject-present?"] "."]
    [:p "Eres " [:code (pr-str (:wb/subject request))] "."]
-   [:form {:method "post" :action "/revocar"}
-    (security/csrf-field request)
-    [:button {:type "submit"} "Revocar mi acceso en todas partes"]]
-   [:p [:small "Revocar no borra esta sesión: mueve la generación del sujeto, y toda "
-        "sesión suya —en este navegador y en cualquier otro— muere en su siguiente "
-        "petición."]]))
+   [:p [:small "«Salir en todas partes», arriba, no borra solo esta sesión: mueve la "
+        "generación del sujeto, y toda sesión suya —en este navegador y en cualquier "
+        "otro— muere en su siguiente petición."]]))
 
 (defn error-page
   "web-base's error layout slot."

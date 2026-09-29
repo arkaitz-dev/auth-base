@@ -2,9 +2,9 @@
   "The integration probe: auth-base and web-base in one application, exercised
   through the assembled handler rather than through either module's functions.
 
-  What it is really testing is that the two seams meet — web-base's
-  `:subject-fn` and `:wb/gate`, auth-base's `routes` and `establish` — and that
-  nothing in between needed a special case. The test helpers are each module's
+  What it is really testing is that the plugin meets web-base as data — its routes,
+  pages, stylesheet, dictionary, subject function and login path merged into one config
+  — and that the host's gate, layouts and copy work through it with no special case. The test helpers are each module's
   own — web-base's for cookies and the CSRF token, auth-base's `testing` mailbox for
   the link it would have emailed — and nothing here is written to bridge the two."
   (:require [clojure.java.io :as io]
@@ -72,17 +72,20 @@
         (is (str/includes? (:body private) ":name &quot;Ada&quot;")
             "which is the host's own record, rendered by the host's own view")
         (is (str/includes? (:body private) "<!DOCTYPE html>")
-            "through the host's layout stack — the module's response was Hiccup and web-base
-             rendered it, neither of them knowing about the other")))))
+            "through the host's layout stack")
+        (is (str/includes? (:body private) "formaction=\"/revocar\"")
+            "and its identity slot offers to sign out everywhere, at the path the host chose")))))
 
-(deftest the-login-page-is-the-hosts-page--rendered-through-the-hosts-layouts
+(deftest the-login-page-is-the-standard-one--rendered-through-the-hosts-layouts
   (let [{:keys [app]} (fresh)
         page (:body (app (mock/request :get "/entrar")))]
     (is (str/includes? page "<!DOCTYPE html>") "a whole document")
     (is (str/includes? page "auth-base × web-base") "wearing the host's shell")
     (is (str/includes? page "__anti-forgery-token") "carrying web-base's CSRF field")
-    (is (str/includes? page "Enviar enlace") "and the host's own words")
-    (is (str/includes? page "<form action=\"/entrar\" method=\"post\">")
+    (is (str/includes? page "Enviarme un enlace") "in auth-base's Spanish, the host's default locale")
+    (is (str/includes? page "si no lo fuera, esta página diría quién tiene cuenta")
+        "with the host's own sentence put over the dictionary")
+    (is (str/includes? page "<form action=\"/entrar\" class=\"ab-form\" method=\"post\">")
         "posting where the handlers are mounted, as the state told the view")
     (is (str/includes? page "name=\"identifier\"")
         "with its input named as the POST reads it, as the state told the view")))
@@ -128,29 +131,26 @@
        (map #(if (vector? %) (first %) %))
        set))
 
-(deftest the-host-holds-both-modules-and-neither-holds-the-other
-  ;; SPEC §3, stated where it could actually fail: a demo is exactly where
-  ;; somebody reaches across to save a line. That auth-base requires nothing
-  ;; but ring is pinned by its own structural test; what this one pins is the
-  ;; shape of the join.
-  (is (= '#{demo.views dev.arkaitz.auth-base dev.arkaitz.web-base
+(deftest the-host-installs-the-plugin-and-writes-no-sign-in-of-its-own
+  ;; SPEC §3 as amended 2026-09-29: auth-base is a web-base plugin. What this pins is
+  ;; the shape of the join — the plugin handed over as a value, and no view, form or
+  ;; CSRF field of the sign-in written by the host.
+  (is (= '#{demo.views dev.arkaitz.auth-base dev.arkaitz.auth-base.web dev.arkaitz.web-base
             dev.arkaitz.web-base.response}
          (requires-of "demo/app.clj"))
-      "the wiring names both modules, each only through its public face, and the two
-       meet nowhere but here")
-  (is (= '#{dev.arkaitz.web-base.security dev.arkaitz.web-base.shell}
+      "the wiring names the ceremony, the plugin and web-base, each through its public face")
+  (is (= '#{dev.arkaitz.auth-base.web dev.arkaitz.web-base.shell}
          (requires-of "demo/views.clj"))
-      "and the pages are web-base's business alone: the view auth-base asks for is an
-       ordinary function the host already had")
+      "and the pages take the identity slot from the plugin: no CSRF field of the host's own")
   (is (some? (resolve 'dev.arkaitz.web-base/handler))
       "precondition: web-base really is on this classpath, so reaching across would
        have compiled"))
 
-(deftest a-sign-in-refused-by-the-rate-limit-shows-the-hosts-page-and-why
+(deftest a-sign-in-refused-by-the-rate-limit-shows-the-standard-page-and-why
   (let [f (fresh)
         r (last (repeatedly 6 #(second (ask-for-a-link f "ada@example.test"))))]
     (is (= 429 (:status r)) "the sixth from one source is refused")
     (is (some? (get-in r [:headers "Retry-After"])) "saying when to come back")
-    (is (str/includes? (str (:body r)) "Demasiados intentos") "with the host's own sentence, through its layouts")
-    (is (str/includes? (str (:body r)) "Enviar enlace") "and the form")
+    (is (str/includes? (str (:body r)) "Demasiados intentos") "with the standard sentence, through the host's layouts")
+    (is (str/includes? (str (:body r)) "Enviarme un enlace") "and the form")
     (is (not (str/includes? (str (:body r)) "va de camino")) "and not the sentence of a link that was sent")))
