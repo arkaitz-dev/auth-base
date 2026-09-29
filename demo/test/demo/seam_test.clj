@@ -4,14 +4,15 @@
 
   What it is really testing is that the two seams meet — web-base's
   `:subject-fn` and `:wb/gate`, auth-base's `routes` and `establish` — and that
-  nothing in between needed a special case. The test helpers are web-base's
-  own (`testing/cookies`, `testing/csrf-token`), which is itself part of the
-  answer: a host integrating the two needs no test support from auth-base."
+  nothing in between needed a special case. The test helpers are each module's
+  own — web-base's for cookies and the CSRF token, auth-base's `testing` mailbox for
+  the link it would have emailed — and nothing here is written to bridge the two."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [demo.app :as app]
             [dev.arkaitz.auth-base :as auth]
+            [dev.arkaitz.auth-base.testing :as abt]
             [dev.arkaitz.web-base.session :as wb-session]
             [dev.arkaitz.web-base.testing :as wbt]
             [ring.mock.request :as mock]))
@@ -19,9 +20,9 @@
 (def ^:private base "http://localhost:3000")
 
 (defn- fresh []
-  (let [links    (atom [])
+  (let [links    (abt/mailbox)
         ceremony (app/ceremony {:base-url base
-                                :deliver! (fn [id link] (swap! links conj [id link]))})]
+                                :deliver! (abt/deliver-into links)})]
     {:links    links
      :ceremony ceremony
      :app      (app/handler ceremony {:session-key (wb-session/generate-key) :secure? false})}))
@@ -47,7 +48,7 @@
                    (wbt/with-cookies browser)))]))
 
 (defn- link-path [links]
-  (subs (second (last @links)) (count base)))
+  (subs (:link (last @links)) (count base)))
 
 (deftest the-whole-ceremony-through-the-assembled-handler
   (let [{:keys [app links] :as demo} (fresh)]

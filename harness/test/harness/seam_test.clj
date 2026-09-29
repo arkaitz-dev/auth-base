@@ -6,15 +6,17 @@
   does not have to write: nothing about tokens, expiry, single use,
   rotation, generations or enumeration.
 
-  There is no framework here and no router. The cookie jar below is nine lines
-  because a plain Ring host has no test helpers of ours to reach for, and that
-  is the point: whatever the harness needs and does not get is a hole in the
-  module."
+  There is no framework here and no router. The cookie jar below is hand-written
+  because reading cookies is web-base's, and this host has none of it — that is the
+  point: whatever the harness needs and does not get is a hole in the module. The
+  clock and the mailbox are auth-base's own `testing` namespace, which needs nothing
+  but the module."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [dev.arkaitz.auth-base :as auth]
             [clojure.java.io :as io]
             [dev.arkaitz.auth-base.store :as store]
+            [dev.arkaitz.auth-base.testing :as abt]
             [harness.app :as app]
             [ring.mock.request :as mock]))
 
@@ -24,14 +26,14 @@
   "A harness with its own store, its own clock and a place to keep the links it
   would have emailed."
   []
-  (let [links    (atom [])
-        clock    (atom 1000)
+  (let [links    (abt/mailbox)
+        clock    (abt/clock 1000)
         ceremony (app/ceremony
                   {:base-url  base
                    :subjects  {"ada@example.test" {:id 1 :name "Ada"}}
                    :bootstrap ["root@example.test"]
-                   :clock     #(deref clock)
-                   :deliver!  (fn [identifier link] (swap! links conj [identifier link]))})]
+                   :clock     clock
+                   :deliver!  (abt/deliver-into links)})]
     {:links links :clock clock :ceremony ceremony :app (app/app ceremony)}))
 
 (defn- cookie-of [response]
@@ -46,7 +48,7 @@
 (defn- link-path
   "The path of the last link the harness would have sent."
   [links]
-  (subs (second (last @links)) (count base)))
+  (subs (:link (last @links)) (count base)))
 
 (defn- sign-in
   "The whole ceremony from a person's side: ask for a link, open it and press its
@@ -66,7 +68,7 @@
                             :form-params {"identifier" "  Ada@Example.test "}))]
       (is (= "/entrar?ab=sent" (get-in asked [:headers "Location"]))
           "asking for a link is answered by a redirect back to the page, never by a page")
-      (is (= "ada@example.test" (first (last @links)))
+      (is (= "ada@example.test" (:identifier (last @links)))
           "and the address was canonicalised before anything was done with it"))
     (let [shown   (app (mock/request :get (link-path links)))
           _       (is (= [200 nil] [(:status shown) (cookie-of shown)])
@@ -92,7 +94,7 @@
           "and the second is told the link is spent, however soon it comes"))
     (app (assoc (mock/request :post "/entrar") :form-params {"identifier" "ada@example.test"}))
     (let [path (link-path links)]
-      (swap! clock + (* 15 60 1000))
+      (abt/advance! clock (* 15 60 1000))
       (is (= "/entrar?ab=spent" (get-in (app (mock/request :post path)) [:headers "Location"]))
           "and a link clicked after its quarter of an hour is spent too"))))
 
@@ -103,7 +105,7 @@
         unknown (ask "nobody@example.test")]
     (is (= known unknown)
         "the same response, byte for byte — the login page cannot be used to ask who has an account")
-    (is (= ["ada@example.test" "nobody@example.test"] (mapv first @links))
+    (is (= ["ada@example.test" "nobody@example.test"] (mapv :identifier @links))
         "and a link was composed for both, so the work was done either way")
     (is (= "/entrar?ab=spent"
            (get-in (app (mock/request :post (link-path links))) [:headers "Location"]))
