@@ -7,7 +7,12 @@
             [dev.arkaitz.auth-base.handlers :as handlers]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.testing :as abt]
-            [ring.mock.request :as mock]))
+            [dev.arkaitz.auth-base.web :as web]
+            [dev.arkaitz.web-base :as wb]
+            [dev.arkaitz.web-base.testing :as wbt]
+            [ring.middleware.session.memory :as memory]
+            [ring.mock.request :as mock])
+  (:import [clojure.lang ExceptionInfo]))
 
 (deftest the-clock-stands-still-until-advanced--and-advance!-answers-the-new-time
   (let [clock (abt/clock 1000)]
@@ -70,3 +75,91 @@
     (is (= [:put-challenge! :subject-for :identifiers-of :drop-challenges! :bump-generation!] (abt/calls log))
         "and every call, the forbidden one included, is in the log in order")
     (is (= 0 (store/generation inner {:id 1})) "the forbidden call never reached the store")))
+
+;; --- the walk, against a real host ---------------------------------------------------
+
+(defn- host
+  "A web-base host signing people in through the plugin, recording every request it is
+  sent, with one gated page."
+  []
+  (let [box      (abt/mailbox)
+        requests (atom [])
+        sessions (atom {})
+        c        (ceremony/ceremony {:store    (store/in-memory {:subjects {"ada@x.test" {:id 1}}})
+                                     :deliver! (abt/deliver-into box)
+                                     :link     {:base-url "https://x.test" :redeem-path "/login/redeem"}})
+        app      (wb/handler {:session {:store (memory/memory-store sessions)}
+                              :i18n    {:default-locale :en}
+                              :routes  [["/private" {:wb/gate wb/subject-present?
+                                                     :get (fn [r] {:status 200 :body [:div [:p#who (pr-str (:wb/subject r))]
+                                                                                       (web/sign-out r {:revoke-path "/everywhere"})]})}]]
+                              :plugins [(web/plugin c {:after-login "/private" :revoke-path "/everywhere"})]})]
+    {:ceremony c :box box :requests requests :sessions sessions
+     :app      (fn [request]
+                 (swap! requests conj [(:request-method request)
+                                       (str (:uri request) (some->> (:query-string request) (str "?")))])
+                 (app request))}))
+
+(defn- who [b] (second (re-find #"<p id=\"who\">([^<]*)</p>" (str (get-in b [:response :body])))))
+
+(deftest sign-in-walks-as-a-person-does-and-lands-signed-in
+  (let [{:keys [app ceremony box requests]} (host)
+        b (abt/sign-in (wbt/browser app) "ada@x.test" (abt/mailbox-reader ceremony box))
+        token (abt/token-of (abt/last-link box "ada@x.test"))]
+    (is (= [[:get "/login"] [:post "/login"] [:get "/login?ab=sent"]
+            [:get (str "/login/redeem/" token)] [:post (str "/login/redeem/" token)] [:get "/private"]]
+           @requests)
+        "the login page, the form, where it lands, the link opened, its button pressed, and the landing")
+    (is (= ["/private" 200 "{:id 1}"] [(:path b) (get-in b [:response :status]) (who b)])
+        "it lands on the gated page with the subject")))
+
+(deftest sign-in-reads-the-address-as-the-ceremony-spells-it
+  (let [{:keys [app ceremony box]} (host)
+        b (abt/sign-in (wbt/browser app) "  Ada@X.test " (abt/mailbox-reader ceremony box))]
+    (is (= "{:id 1}" (who b)) "typed as a person would, it still finds its link")))
+
+(deftest sign-in-that-reads-no-token-throws-naming-the-identifier-and-where-the-form-landed
+  (let [{:keys [app ceremony box]} (host)
+        attempt (fn [b id] (try (abt/sign-in b id (abt/mailbox-reader ceremony box)) :walked-on
+                                (catch ExceptionInfo e [(ex-message e) (ex-data e)])))]
+    (is (= ["auth-base testing: the link issued to \"eve@x.test\" signed nobody in — the redemption landed on /login?ab=spent"
+            {:identifier "eve@x.test" :path "/login?ab=spent"}]
+           (attempt (wbt/browser app) "eve@x.test"))
+        "an address nobody is known by is sent a link that signs nobody in, and the walk says so")
+    (is (= ["auth-base testing: no link was issued to \"ada@x.test\" — the form landed on /login?ab=sent with 200"
+            {:identifier "ada@x.test" :path "/login?ab=sent" :status 200}]
+           (try (abt/sign-in (wbt/browser app) "ada@x.test" (constantly nil)) :walked-on
+                (catch ExceptionInfo e [(ex-message e) (ex-data e)])))
+        "a reader that finds no token stops the walk, naming the identifier")
+    (let [b (reduce (fn [b _] (wbt/visit (wbt/visit b :get "/login") :post "/login" {"identifier" "eve@x.test"}))
+                    (wbt/browser app) (range 5))]
+      (reset! box [])
+      (is (= "the form landed on /login with 429" (re-find #"the form landed on \S+ with \d+$"
+                                                             (first (attempt b "ada@x.test"))))
+          "and a refusal by the limit names its 429"))))
+
+(deftest sign-out-ends-this-session--everywhere-ends-the-others-and-their-cookies-go
+  (let [{:keys [app ceremony box]} (host)
+        read  (abt/mailbox-reader ceremony box)
+        one   (abt/sign-in (wbt/browser app) "ada@x.test" read)
+        out   (abt/sign-out one)]
+    (is (= "{:id 1}" (who one)) "witness: signed in")
+    (is (= "/login" (:path out)) "sign-out lands on the login page")
+    (is (= "/login?next=%2Fprivate" (:path (wbt/visit out :get "/private"))) "and the gated page is closed to it"))
+  (let [{:keys [app ceremony box sessions]} (host)
+        read  (abt/mailbox-reader ceremony box)
+        one   (abt/sign-in (wbt/browser app) "ada@x.test" read)
+        two   (abt/sign-in (wbt/browser app) "ada@x.test" read)
+        key   (get-in two [:jar "ring-session"])]
+    (is (= ["{:id 1}" "{:id 1}"] [(who one) (who two)]) "witness: two tabs, both signed in")
+    (abt/sign-out one {:everywhere? true :revoke-path "/everywhere"})
+    (let [refused (wbt/visit two :get "/private" nil {:follow? false})]
+      (is (= [303 "/login?next=%2Fprivate"] [(get-in refused [:response :status])
+                                             (get-in refused [:response :headers "Location"])])
+          "signing out everywhere closes the gated page to the other tab"))
+    (is (contains? @sessions key) "witness: the gate refuses the other tab's session and leaves it stored")
+    (wbt/visit two :get "/login")
+    (is (not (contains? @sessions key))
+        "and at the login page the plugin's wrap-revoked deletes it"))
+  (is (thrown-with-msg? ExceptionInfo #"needs the :revoke-path"
+                        (abt/sign-out (wbt/browser (fn [_])) {:everywhere? true}))))
