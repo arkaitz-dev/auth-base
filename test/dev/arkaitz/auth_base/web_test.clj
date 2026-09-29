@@ -18,10 +18,15 @@
 (def ^:private ab-keys (set (keys (get-in web/dict [:en :ab]))))
 
 (defn- text-of
-  "The words a person reads in `markup`: tags, and the hidden CSRF input, removed."
+  "The words a person reads in `markup`: its text, and the attributes a browser shows or
+  reads aloud — `placeholder`, `title`, `alt`, `aria-label` and a button's `value`."
   [markup]
-  (->> (str/split (str/replace (render/html markup) #"<[^>]*>" " ") #"\s+")
-       (remove str/blank?)))
+  (let [html (render/html markup)]
+    (->> (concat [(str/replace html #"<[^>]*>" " ")]
+                 (map second (re-seq #"\b(?:placeholder|title|alt|aria-label)=\"([^\"]*)\"" html))
+                 (map second (re-seq #"<(?:button|input)[^>]*type=\"(?:submit|button)\"[^>]*value=\"([^\"]*)\"" html)))
+         (mapcat #(str/split % #"\s+"))
+         (remove str/blank?))))
 
 (def ^:private sentinel-tr
   "A translator that answers each id spelt as a sentinel, empty ones included, so a word
@@ -43,6 +48,27 @@
         "no word is spelt in the markup: each one is a key a host can translate or replace")
     (is (= ab-keys (set (map #(keyword (subs % 1 (dec (count %)))) (distinct words))))
         "and every key of the dictionary is shown somewhere, so none is dead")))
+
+(deftest the-text-extraction-reads-shown-attributes-too
+  (is (= ["⟦a⟧" "loose"] (text-of [:p "⟦a⟧" [:input {:placeholder "loose"}]]))
+      "control: a word in a placeholder is a word the page shows"))
+
+(deftest the-form-says-what-the-ceremony-enforces-and-an-error-is-announced
+  (let [page (render/html (web/view anonymous {:action "/login" :field "identifier" :spent? true}))]
+    (is (str/includes? page "maxlength=\"320\"") "the input's bound is the handlers' own")
+    (is (str/includes? page "class=\"ab-notice ab-notice-error\" role=\"alert\"")
+        "an error is role=alert, so a screen reader announces it"))
+  (is (str/includes? (render/html (web/view anonymous {:action "/login" :field "identifier" :sent? true}))
+                     "class=\"ab-notice ab-notice-ok\" role=\"status\"")
+      "and a sent link is a status"))
+
+(deftest sign-out-posts-where-the-plugin-mounted-the-logout
+  (let [action (fn [opts] (second (re-find #"<form action=\"([^\"]*)\" class=\"ab-sign-out\""
+                                           (render/html (web/sign-out signed-in opts)))))]
+    (is (= ["/logout" "/salir" "/logout"] [(action {}) (action {:logout-path "/salir"}) (action {:logout-path nil})])
+        "the default, the path given, and an explicit nil, which the handlers mount at /logout too"))
+  (is (str/includes? (render/html (web/identity (assoc signed-in :wb/subject false))) "ab-sign-out")
+      "a subject of false is signed in, and is offered the sign-out"))
 
 (deftest the-dictionary-has-every-key-in-every-locale
   (is (= #{:en :es} (set (keys web/dict))))
@@ -139,6 +165,23 @@
     (is (str/includes? (:body (:response (last posts))) "data-ab-state=\"limited\"")
         "the 429 is the standard page in its limited state")))
 
+(deftest a-host-whose-default-locale-the-dictionary-lacks-reads-english-not-nothing
+  (let [ceremony (auth/ceremony {:store (auth/in-memory-store) :deliver! (fn [_ _])
+                                 :link  {:base-url "https://x.test" :redeem-path "/login/redeem"}})
+        app  (wb/handler {:session {:key session-key}
+                          :i18n    {:default-locale :fr :dict {:fr {:host {:x "y"}}}}
+                          :plugins [(web/plugin ceremony {})]})
+        body (:body (:response (wbt/visit (wbt/browser app) :get "/login")))]
+    (is (str/includes? body "<h2 class=\"ab-title\">Sign in</h2>")
+        "a French host gets the English page until it translates it, never an empty one")))
+
+(deftest the-confirmation-form-posts-to-the-link-itself
+  (let [{:keys [app]} (host)
+        link (str "/login/redeem/" (apply str (repeat 43 "A")))
+        body (get-in (wbt/visit (wbt/browser app) :get link) [:response :body])]
+    (is (str/includes? body (str "<form action=\"" link "\" class=\"ab-form\" method=\"post\">"))
+        "the button posts to the link, where the redemption listens")))
+
 (deftest a-host-view-replaces-the-standard-one--and-may-call-its-parts
   (let [{:keys [app]} (host {:view (fn [request state]
                                      (if (:confirm? state)
@@ -150,10 +193,19 @@
                        "<p id=\"mine\">mine</p>")
         "and the one it does is the host's")))
 
+(defn- var-layout [{:keys [content]}] [:div#var-layout content])
+
+(deftest a-layout-may-be-a-var--as-web-base-takes-it
+  (let [ceremony (auth/ceremony {:store (auth/in-memory-store) :deliver! (fn [_ _])
+                                 :link  {:base-url "https://x.test" :redeem-path "/login/redeem"}})
+        app (wb/handler {:session {:key session-key} :i18n {:default-locale :en}
+                         :plugins [(web/plugin ceremony {:layouts [#'var-layout]})]})]
+    (is (str/includes? (:body (:response (wbt/visit (wbt/browser app) :get "/login"))) "<div id=\"var-layout\">"))))
+
 (deftest the-plugin-refuses-layouts-that-are-not-a-vector-of-functions
   (let [ceremony (auth/ceremony {:store (auth/in-memory-store) :deliver! (fn [_ _])
                                  :link  {:base-url "https://x.test" :redeem-path "/login/redeem"}})]
-    (doseq [bad ["x" [1] (list identity)]]
+    (doseq [bad ["x" [1] (list identity) [:content]]]
       (is (= [:layouts] (try (web/plugin ceremony {:layouts bad}) nil
                              (catch ExceptionInfo e (:config-key (ex-data e)))))
           (str "refused: " (pr-str bad))))

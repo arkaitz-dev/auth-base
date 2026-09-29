@@ -74,12 +74,13 @@
              :sign-out-everywhere "Salir en todas partes"}}})
 
 (defn- t
-  "The string `k` names, in the request's language. Outside web-base's i18n — a view
-  rendered by a test, or by a host with no `:i18n` — the English one."
+  "The string `k` names, in the request's language, or else in English: outside
+  web-base's i18n — a view rendered by a test — and in a locale this dictionary lacks.
+  Tempura falls back to the host's `:default-locale`, not to English, so a host whose
+  default is French would otherwise get a page with no words on it."
   [request k]
-  (if-let [tr (:wb/tr request)]
-    (tr (keyword "ab" (name k)))
-    (get-in dict [:en :ab k])))
+  (or (some-> (:wb/tr request) (apply [(keyword "ab" (name k))]))
+      (get-in dict [:en :ab k])))
 
 (defn- state-name [{:keys [sent? spent? limited? confirm?]}]
   (cond sent? "sent" spent? "spent" limited? "limited" confirm? "confirm" :else "form"))
@@ -135,8 +136,12 @@
    :logout-path "/logout"
    :rate-limit  {:limit 5 :window-ms (* 15 60 1000)}})
 
-(defn- paths [opts]
-  (select-keys (merge defaults opts) [:login-path :logout-path :revoke-path]))
+(defn- paths
+  "The three paths, an explicit nil counting as absent, as the handlers count it: a
+  nil `:logout-path` mounts the logout at /logout, so the button must post there."
+  [opts]
+  (merge (select-keys defaults [:login-path :logout-path])
+         (into {} (remove (comp nil? val)) (select-keys opts [:login-path :logout-path :revoke-path]))))
 
 (defn sign-out
   "A sign-out form for a signed-in page, posting to `:logout-path`; with a
@@ -170,11 +175,17 @@
   minutes; an explicit nil sets none) — and `:layouts`, the host's layouts the pages
   render inside, which a plugin's routes do not inherit from the host's.
 
+  **The paths are given here, never in the host's config.** The plugin supplies
+  `:login-path` to web-base, and a host's own `:login-path` would win over it while the
+  routes stayed where this one mounts them: the gate would send people to a page nobody
+  serves. Hand the same map to `identity` and `sign-out`, so their buttons post where the
+  routes are.
+
   The routes also carry `wrap-revoked`, so a revoked session's cookie is thrown away at
   the login page; the host's own routes take it as route middleware if it wants the
   same there."
   [ceremony {:keys [layouts] :as opts}]
-  (when-not (or (nil? layouts) (and (vector? layouts) (every? ifn? layouts)))
+  (when-not (or (nil? layouts) (and (vector? layouts) (every? #(or (fn? %) (var? %)) layouts)))
     (throw (ex-info "auth-base web: :layouts must be a vector of layout functions"
                     {:config-key [:layouts] :value layouts})))
   (let [opts (merge defaults {:view view} (dissoc opts :layouts))]

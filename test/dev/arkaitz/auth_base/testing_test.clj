@@ -80,25 +80,29 @@
 
 (defn- host
   "A web-base host signing people in through the plugin, recording every request it is
-  sent, with one gated page."
-  []
+  sent, with one gated page. `extra` is merged into the web-base config."
+  ([] (host {} {}))
+  ([plugin-opts extra]
   (let [box      (abt/mailbox)
         requests (atom [])
         sessions (atom {})
         c        (ceremony/ceremony {:store    (store/in-memory {:subjects {"ada@x.test" {:id 1}}})
                                      :deliver! (abt/deliver-into box)
                                      :link     {:base-url "https://x.test" :redeem-path "/login/redeem"}})
-        app      (wb/handler {:session {:store (memory/memory-store sessions)}
+        app      (wb/handler (merge
+                              {:session {:store (memory/memory-store sessions)}
                               :i18n    {:default-locale :en}
                               :routes  [["/private" {:wb/gate wb/subject-present?
                                                      :get (fn [r] {:status 200 :body [:div [:p#who (pr-str (:wb/subject r))]
-                                                                                       (web/sign-out r {:revoke-path "/everywhere"})]})}]]
-                              :plugins [(web/plugin c {:after-login "/private" :revoke-path "/everywhere"})]})]
+                                                                                       (web/sign-out r (merge {:revoke-path "/everywhere"} plugin-opts))]})}]]
+                              :plugins [(web/plugin c (merge {:after-login "/private" :revoke-path "/everywhere"}
+                                                             plugin-opts))]}
+                             extra))]
     {:ceremony c :box box :requests requests :sessions sessions
      :app      (fn [request]
                  (swap! requests conj [(:request-method request)
                                        (str (:uri request) (some->> (:query-string request) (str "?")))])
-                 (app request))}))
+                 (app request))})))
 
 (defn- who [b] (second (re-find #"<p id=\"who\">([^<]*)</p>" (str (get-in b [:response :body])))))
 
@@ -163,3 +167,34 @@
         "and at the login page the plugin's wrap-revoked deletes it"))
   (is (thrown-with-msg? ExceptionInfo #"needs the :revoke-path"
                         (abt/sign-out (wbt/browser (fn [_])) {:everywhere? true}))))
+
+(deftest sign-in-refuses-to-walk-on-when-the-login-page-is-not-there-or-the-landing-names-nobody
+  (let [{:keys [app ceremony box]} (host {:login-path "/entrar"} {})]
+    (is (= ["auth-base testing: the login page /login answered 404 — is the plugin mounted there?"
+            {:identifier "ada@x.test" :path "/login" :status 404}]
+           (try (abt/sign-in (wbt/browser app) "ada@x.test" (abt/mailbox-reader ceremony box)) :walked-on
+                (catch ExceptionInfo e [(ex-message e) (ex-data e)])))
+        "a walk to a login page that is not there names the page and its 404"))
+  (let [{:keys [app ceremony box]} (host {} {:subject-fn (constantly nil)})]
+    (is (= "auth-base testing: the link issued to \"ada@x.test\" signed nobody in — the redemption landed on /login?next=%2Fprivate"
+           (try (abt/sign-in (wbt/browser app) "ada@x.test" (abt/mailbox-reader ceremony box)) :walked-on
+                (catch ExceptionInfo e (ex-message e))))
+        "a host whose subject function answers nobody is sent back to the login page, and the walk says so")))
+
+(deftest sign-out-posts-to-the-logout-path-it-is-given
+  (let [{:keys [app ceremony box requests]} (host {:login-path "/entrar" :logout-path "/salir"} {})
+        b (abt/sign-in (wbt/browser app) "ada@x.test" (abt/mailbox-reader ceremony box) {:login-path "/entrar"})]
+    (reset! requests [])
+    (let [out (abt/sign-out b {:logout-path "/salir"})]
+      (is (= [:post "/salir"] (first @requests)))
+      (is (= "/entrar" (:path out)) "and lands on the login page the plugin was given"))))
+
+(deftest sign-in-lands-anywhere-the-host-chose-that-is-not-the-login-page-refusing
+  (let [{:keys [app ceremony box]} (host {:after-login "/login"} {})
+        b (abt/sign-in (wbt/browser app) "ada@x.test" (abt/mailbox-reader ceremony box))]
+    (is (= "/login" (:path b)) "a host whose :after-login is the login page itself is signed in there, not refused")
+    (is (= 200 (get-in (wbt/visit b :get "/private") [:response :status])) "witness: really signed in"))
+  (let [{:keys [app ceremony box]} (host {:after-login "/login-done"}
+                                         {:routes [["/login-done" {:get (fn [_] {:status 200 :body "done"})}]]})
+        b (abt/sign-in (wbt/browser app) "ada@x.test" (abt/mailbox-reader ceremony box))]
+    (is (= "/login-done" (:path b)) "a path that merely starts with the login path's letters is another page")))

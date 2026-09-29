@@ -832,3 +832,14 @@
         "and one that names none left to wait says 0, which the header allows")
     (is (nil? (get-in (post (issue-with (constantly false)) "a@x.test") [:headers "Retry-After"]))
         "control: a boolean refusal still carries no invented delay")))
+
+(deftest revoke-path-revokes-a-subject-of-false-like-any-other
+  ;; `false` is a subject module-wide (SPEC §17); `(when-let …)` where `(when-some …)`
+  ;; belongs would sign such a person out here and leave every other session of theirs alive.
+  (let [{:keys [revoke ceremony] :as f} (fixture {:subjects {"f@x.test" false}
+                                                  :extra    {:revoke-path "/everywhere"}})
+        request (signed-in f "f@x.test" "/everywhere")]
+    (is (= [false 0] [(get-in request [:session :ab/subject]) (ceremony/generation ceremony false)])
+        "witness: signed in as false, at generation 0")
+    (revoke request)
+    (is (= 1 (ceremony/generation ceremony false)) "the subject false was revoked")))

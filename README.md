@@ -161,9 +161,11 @@ which belongs to your stack, so your login view emits the field.
 
 That line brings the login routes with the standard view rendered inside your
 `:layouts`, `/ab/ab.css`, a dictionary of every string in English and Spanish, the
-`:subject-fn` and the `:login-path` — each of which your own config overrides. web-base
-merges it as data and calls nothing of it on its own; `(wb/expand config)` shows the
-result. `:i18n :default-locale` is required once a plugin brings a dictionary: the
+`:subject-fn` and the `:login-path`. web-base merges it as data and calls nothing of it
+on its own; `(wb/expand config)` shows the result. **Give the paths to the plugin, never
+to your own config**: a `:login-path` of yours would win over the plugin's while its
+routes stayed where it mounted them, and the gate would send people to a page nobody
+serves. Keep them in one map and hand it to `identity` and `sign-out` too. `:i18n :default-locale` is required once a plugin brings a dictionary: the
 language is yours to choose. The plugin takes the handlers' options below, defaulting
 `:login-path` to `/login` and `:rate-limit` to five links per source every fifteen
 minutes (an explicit nil sets none), plus `:layouts`.
@@ -188,7 +190,9 @@ out everywhere, under a `:revoke-path` — while an anonymous one shows a link t
 - any string, per locale, in your dictionary: `{:es {:ab {:title "Acceso"}}}` replaces
   that one and keeps the rest. `:ab/sent-detail` and `:ab/note` are empty until you
   fill them — where the link went in development, why the answer never says whether an
-  address has an account. The keys are `auth-web/dict`;
+  address has an account. The keys are `auth-web/dict`. A string your locale lacks —
+  a whole language the dictionary does not have, or one you translated in part — is
+  shown in English, never left blank;
 - `:view`, a view of your own for the five states, which may call the standard parts
   for the states it does not redraw:
 
@@ -202,8 +206,13 @@ out everywhere, under a `:revoke-path` — while an anonymous one shows a link t
 `notice`, `sign-in-form` and `confirm-form` are the view's parts, public for the same
 reason.
 
-**Signing out**: `:on-logout (fn [request])` runs before a logout ends the session, while
-`:session/key` still names it — where a host forgets its record of the device.
+**In a native image**, add the stylesheet to the image's resources beside web-base's:
+`-H:IncludeResources='dev/arkaitz/auth_base/public/[^/]+\.[a-z]+$'` on the command line,
+the same pattern with `\\.` in a `native-image.properties`.
+
+**Signing out**: `:on-logout (fn [request])` is handed the logout's request, whose
+`:session/key` names the session being deleted — where a host forgets its record of the
+device. If it throws, the session is not ended.
 `:revoke-path` is a POST that signs the subject out everywhere: `revoke!`, then
 `:on-revoke (fn [request subject])`, then this session ended.
 

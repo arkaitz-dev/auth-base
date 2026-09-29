@@ -141,21 +141,30 @@
 
   A token that cannot be read throws, naming the identifier and where the form landed,
   with its status, and so does a link whose redemption signs nobody in — an address the
-  ceremony has no subject for is sent one all the same — rather than walking on signed out: an address the ceremony knows
+  ceremony has no subject for is sent one all the same, and a subject function that answers nobody lands there too — rather than walking on signed out: an address the ceremony knows
   nobody by, one the limit refused, or a reader that looks under another spelling
   would otherwise turn every assertion after it into one about an anonymous visitor.
   `opts`: `:login-path`, `:field`, `:redeem-path`."
   ([b identifier read-token] (sign-in b identifier read-token {}))
   ([b identifier read-token opts]
    (let [{:keys [login-path field]} (merge walk-defaults opts)
-         asked  (-> b (wbt/visit :get login-path) (wbt/visit :post login-path {field identifier}))
+         page   (wbt/visit b :get login-path)
+         _      (when-not (= 200 (get-in page [:response :status]))
+                  (throw (ex-info (str "auth-base testing: the login page " login-path " answered "
+                                       (get-in page [:response :status]) " — is the plugin mounted there?")
+                                  {:identifier identifier :path login-path
+                                   :status (get-in page [:response :status])})))
+         asked  (wbt/visit page :post login-path {field identifier})
          landed [(:path asked) (get-in asked [:response :status])]]
      (if-let [token (read-token identifier)]
        (let [b (open-link asked token opts)]
          ;; The ceremony sends a link to any address, known or not, so that the form
          ;; says nothing about who has an account; the redemption is where an unknown
-         ;; one fails, and the walk must not go on signed out from there.
-         (if (= (str login-path "?ab=spent") (:path b))
+         ;; one fails — back on the login page with a query — and the walk must not go on
+         ;; signed out from there. So must a subject function that answers nobody, which
+         ;; the gate sends back with `?next=`. The login page without a query is a
+         ;; landing a host may choose as its `:after-login`, and is not refused.
+         (if (str/starts-with? (:path b) (str login-path "?"))
            (throw (ex-info (str "auth-base testing: the link issued to " (pr-str identifier) " signed nobody"
                                 " in — the redemption landed on " (:path b))
                            {:identifier identifier :path (:path b)}))

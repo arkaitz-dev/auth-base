@@ -226,9 +226,10 @@
                    source and lets it back in sooner. Under a host's function
                    it carries none, because that function says whether and
                    never when.
-    :on-logout     `(fn [request])`, called before a logout ends the session, while the
-                   request still names it: the host's own record of this device goes
-                   in the same act. Its answer is ignored; what it throws, throws
+    :on-logout     `(fn [request])`, called with the logout's request, whose
+                   `:session/key` and session name the session the logout deletes: the
+                   host's own record of this device goes in the same act. Its answer is
+                   ignored; what it throws, throws — and the session is then not ended
     :on-revoke     `(fn [request subject])`, called after `revoke!` has moved the
                    subject's generation — so a host's failure there never leaves a
                    revocation undone — and before this session is ended
