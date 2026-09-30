@@ -454,27 +454,25 @@ store never loads it (tested with next.jdbc 1.3.1048, on H2 and SQLite).
 never a handle or a map, which is refused by name. **Keep `:on-unknown`**: this store
 creates no account on its own, so without the hook an address it has never seen is
 answered as a link that does not work, every time, and nothing is logged — the whole
-sign-up path is closed and the sign-in path looks healthy. It runs no migration: copy these
-three statements, `auth-jdbc/ddl`, into your own, whole, and let `check!` catch a copy
-that lost a table or a column (it reads names, not keys — the keys are what make
-registration and revocation exact):
+sign-up path is closed and the sign-in path looks healthy.
 
-```sql
-CREATE TABLE account (subject VARCHAR(36) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL UNIQUE, created_at BIGINT NOT NULL);
---;;
-CREATE TABLE account_generation (subject VARCHAR(36) NOT NULL PRIMARY KEY, generation BIGINT NOT NULL);
---;;
-CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL);
---;;
-CREATE INDEX login_challenge_identifier ON login_challenge (identifier);
+**Its tables ship as migrations** (since 0.10.0), one statement per file under the
+classpath prefix `dev/arkaitz/auth_base/migrations`, and db-base 0.4.0 runs them before
+yours, under a history of their own:
+
+```clojure
+{:dev.arkaitz.db-base/database
+ {…
+  :libraries [{:dir "dev/arkaitz/auth_base/migrations"
+               :table "auth_base_migrations"
+               :lock-wait-ms 5000}]}}
 ```
 
-The `--;;` lines are ragtime's separator, which db-base's migrations run through: the
-block pasted whole into one `.up.sql` file is four statements. The index is since 0.8.0,
-when `revoke!` began dropping the subject's unused links: a host that copied the three
-tables before adds it as a migration of its own. Without them SQLite's
-driver runs the first and silently drops the rest, and the migration is recorded as
-applied all the same; `check!` then names the table that is missing.
+A later version's schema change is a new file there, applied at your next boot: nothing to
+copy. A host on another migration tool runs the same files, or `auth-jdbc/ddl`, the same
+statements as data; `check!` still refuses a boot whose tables lost a table or a column
+(it reads names, not keys — the keys are what make registration and revocation exact).
+Your own tables refer to `account(subject)`, which exists before your migrations run.
 
 Every statement is portable: `take-challenge!` reads and then deletes, and **the delete's
 count decides** who redeemed the link; a revocation moves its generation by

@@ -405,15 +405,13 @@
        (is (= a (ceremony/redeem! c (link! ada))) (str engine ": a link asked for after it works"))
        (is (= [1 0] [(aj/generation ds a) (aj/generation ds b)]) (str engine ": and only the subject's generation moved"))))))
 
-(deftest the-readme-shows-exactly-the-ddl
+(deftest the-readme-hands-db-base-the-prefix-the-migrations-ship-under
   (let [readme (slurp (io/file "README.md"))
-        block  (second (re-find #"(?s)### A store over JDBC.*?```sql\n(.*?)```" readme))
-        stmts  (some->> block str/split-lines (map str/trim) (remove str/blank?) (remove #{"--;;"})
-                        (mapv #(str/replace % #";$" "")))
-        seps   (some->> block str/split-lines (map str/trim) (filter #{"--;;"}) count)]
-    (is (= 3 seps) "ragtime's separator stands between each two statements, so the block pasted whole is four")
-    (is (= 4 (count stmts)) (str "precondition: the README's sql block was found: " (pr-str block)))
-    (is (= aj/ddl stmts) "the statements a host copies are the ones the library reads")))
+        dir    (second (re-find #"(?s)### A store over JDBC.*?:libraries \[\{:dir \"([^\"]+)\"" readme))]
+    (is (= "dev/arkaitz/auth_base/migrations" dir)
+        (str "the README's :libraries entry names the prefix: " (pr-str dir)))
+    (is (some? (io/resource (str dir "/001-accounts.up.sql")))
+        "and the first migration is found under it on the classpath, as db-base will look")))
 
 (deftest latest-challenge-token-answers-the-most-recent-challenge-of-that-identifier-or-nil
   (on-engines
@@ -485,3 +483,35 @@
          (is (= 3 (count-of ds "login_challenge")) (str engine ": and " label " deleted nothing")))
        (is (= 2 (aj/reclaim-expired! ds 200))
            (str engine ": control — the same rows, with a number, are reclaimed"))))))
+
+;; --- the migrations it ships ---------------------------------------------------------
+
+(def ^:private migration-files
+  ["001-accounts.up.sql" "002-generations.up.sql" "003-challenges.up.sql" "004-challenge-identifier.up.sql"])
+
+(defn- statement-of
+  "The one statement a migration file holds: its lines less the `--` comments, joined."
+  [file-name]
+  (let [url (io/resource (str "dev/arkaitz/auth_base/migrations/" file-name))]
+    (when url
+      (->> (str/split-lines (slurp url))
+           (remove #(str/starts-with? (str/trim %) "--"))
+           (remove str/blank?)
+           (str/join " ")
+           str/trim))))
+
+(deftest the-migrations-it-ships-are-the-ddl-one-file-each-and-create-what-check!-reads
+  (let [dir   (io/file (io/resource "dev/arkaitz/auth_base/migrations"))
+        found (sort (map #(.getName ^java.io.File %) (.listFiles dir)))]
+    (is (= migration-files found)
+        "the prefix holds exactly the four, numbered in the order they must run — a new one is a new number")
+    (is (= aj/ddl (mapv statement-of migration-files))
+        "each file holds the ddl statement of its position, and nothing else, so the two cannot drift"))
+  (on-engines (mapv statement-of migration-files)
+              (fn [engine ds]
+                (is (identical? ds (aj/check! ds)) (str engine ": the files, run in order, pass check!"))
+                (is (= 1 (count (filter #(= "LOGIN_CHALLENGE_IDENTIFIER" (str/upper-case (str (first %))))
+                                        (raw ds (if (= engine "H2")
+                                                  "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.INDEXES WHERE INDEX_NAME = 'LOGIN_CHALLENGE_IDENTIFIER'"
+                                                  "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'login_challenge_identifier'")))))
+                    (str engine ": and the index a revocation reads by, which check! does not look for")))))

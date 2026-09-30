@@ -6,6 +6,17 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.10.0 — unreleased
+
+- **Changed:** an `:on-logout` that throws no longer leaves the person signed in. The
+  exception is logged through tools.logging, with its stack and nothing from the request,
+  and the session is ended all the same; an interrupt and an `Error` still pass. Signing
+  out is the security act, and a host's record of a device is not.
+- The tables ship as migrations under `dev/arkaitz/auth_base/migrations`, which db-base
+  0.4.0 runs before the host's with `:libraries` — a host stops copying them, and a later
+  schema change arrives with the version. Remove the copies from your migrations and
+  recreate a development database that recorded them under your ids.
+
 ## 0.9.1 — 2026-09-29
 
 - On web-base 0.12.0, where a site's languages are its `:i18n :locales`: the standard

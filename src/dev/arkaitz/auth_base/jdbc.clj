@@ -14,10 +14,11 @@
   another library's. So the library is still not a database: it is three tables'
   worth of statements over a pool somebody else opened.
 
-  **It runs no migration either.** `ddl` is the three tables it reads and writes, as
-  statements the host copies into its own migrations — the schema stays the host's
-  to apply, and `check!` tells a boot whose copy has drifted from this version before
-  the first person tries to sign in.
+  **It runs no migration either, and ships them.** Its tables are migration files under
+  the classpath prefix `dev/arkaitz/auth_base/migrations`, which db-base runs under a
+  history of their own when the host names the prefix in `:libraries` (since 0.10.0);
+  `ddl` is the same statements as data, for a host on another tool. `check!` tells a boot
+  whose tables have drifted from this version before the first person tries to sign in.
 
   **Every statement is portable**, because the library cannot know the engine: no
   `RETURNING`, no upsert. The single use of a magic link rests on a `DELETE` whose
@@ -34,10 +35,10 @@
            [javax.sql DataSource]))
 
 (def ddl
-  "The three tables and the index a revocation reads them by, as one statement each,
-  for the host's own migrations. Names are fixed — the host's tables refer to
-  `account(subject)` by foreign key. The index is since 0.8.0: a host that copied the
-  three tables before adds it as a migration of its own."
+  "The three tables and the index a revocation reads them by, as one statement each —
+  the statements of the migration files this library ships, in their order, which a test
+  holds them to. Names are fixed: the host's tables refer to `account(subject)` by
+  foreign key."
   ["CREATE TABLE account (subject VARCHAR(36) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL UNIQUE, created_at BIGINT NOT NULL)"
    "CREATE TABLE account_generation (subject VARCHAR(36) NOT NULL PRIMARY KEY, generation BIGINT NOT NULL)"
    "CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL)"
