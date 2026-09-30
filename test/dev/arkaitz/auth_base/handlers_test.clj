@@ -457,6 +457,27 @@
     (is (= [:session nil] (find response :session)) "and the session is deleted all the same")
     (is (= "/bye" (get-in response [:headers "Location"])))))
 
+(deftest an-on-logout-that-throws-is-logged-and-the-session-is-ended-all-the-same
+  ;; A hook that fails for a reason of its own — not the session store, whose failure is
+  ;; the base's 500 whatever the handler does — so the two outcomes differ here.
+  (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw (ex-info "device table gone" {})))}})
+        request (assoc (mock/request :post "/out") :session {:ab/subject {:id 1}}
+                       :headers {"cookie" "ring-session=SECRET-COOKIE"})]
+    (lt/with-log
+      (let [response (logout request)]
+        (is (= [303 "/bye" [:session nil]]
+               [(:status response) (get-in response [:headers "Location"]) (find response :session)])
+            "the person asked to leave, and is signed out: the logout's own response, the session deleted")
+        (is (= [[:warn "auth-base: :on-logout failed; the session is ended all the same" "device table gone"]]
+               (mapv (juxt :level :message #(some-> % :throwable ex-message)) (lt/the-log)))
+            "the hook's failure is logged once, with the exception it threw")
+        (is (not (str/includes? (pr-str (lt/the-log)) "SECRET-COOKIE"))
+            "and nothing from the request, which carries the cookie"))))
+  (doseq [[label thrown] [["an interrupt" (InterruptedException. "stop")] ["an Error" (AssertionError. "broken")]]]
+    (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw thrown))}})]
+      (is (identical? thrown (try (logout (mock/request :post "/out")) nil (catch Throwable t t)))
+          (str label " is not a failure of the hook, and passes")))))
+
 (defn- signed-in
   "A request carrying the session a redemption of `identifier`'s link established."
   [{:keys [redeem] :as f} identifier path]

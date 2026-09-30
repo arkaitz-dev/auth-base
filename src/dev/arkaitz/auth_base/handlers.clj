@@ -40,6 +40,7 @@
   otherwise, because `issue!` never asks whether the address is known — and
   answers the same `303` either way (SPEC §11)."
   (:require [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.rate-limit :as rate-limit]
             [dev.arkaitz.auth-base.session :as session]
@@ -229,7 +230,9 @@
     :on-logout     `(fn [request])`, called with the logout's request, whose
                    `:session/key` and session name the session the logout deletes: the
                    host's own record of this device goes in the same act. Its answer is
-                   ignored; what it throws, throws — and the session is then not ended
+                   ignored, and an exception it throws is logged and the session ended
+                   all the same (since 0.10.0). A session store that itself fails still
+                   leaves the logout unfinished: that is the base's 500
     :on-revoke     `(fn [request subject])`, called after `revoke!` has moved the
                    subject's generation — so a host's failure there never leaves a
                    revocation undone — and before this session is ended
@@ -349,7 +352,15 @@
 
      :logout
      (fn [request]
-       (when on-logout (on-logout request))
+       ;; The person asked to leave, and leaving is the security act: a host's hook that
+       ;; fails costs its own record of the device, never the sign-out. Logged with its
+       ;; stack and nothing from the request, which carries the cookie; an interrupt and
+       ;; an Error are not failures of the hook and pass (since 0.10.0).
+       (when on-logout
+         (try (on-logout request)
+              (catch InterruptedException e (throw e))
+              (catch Exception e
+                (log/warn e "auth-base: :on-logout failed; the session is ended all the same"))))
        (signed-out))}
 
       revoke-path
