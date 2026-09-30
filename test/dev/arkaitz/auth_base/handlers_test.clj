@@ -457,6 +457,29 @@
     (is (= [:session nil] (find response :session)) "and the session is deleted all the same")
     (is (= "/bye" (get-in response [:headers "Location"])))))
 
+(defn- logging-that-cannot-render
+  "A tools.logging factory whose backend fails on any throwable it is handed — as logback
+  does on a cause chain whose getCause throws — and records the lines it can write."
+  [lines]
+  (reify clojure.tools.logging.impl/LoggerFactory
+    (name [_] "cannot-render")
+    (get-logger [_ _]
+      (reify clojure.tools.logging.impl/Logger
+        (enabled? [_ _] true)
+        (write! [_ _ throwable message]
+          (when throwable (throw (IllegalStateException. "the backend could not render it")))
+          (swap! lines conj message))))))
+
+(deftest a-backend-that-cannot-log-the-hooks-exception-does-not-undo-the-sign-out
+  (let [lines (atom [])
+        {:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw (ex-info "device table gone" {})))}})
+        response (binding [clojure.tools.logging/*logger-factory* (logging-that-cannot-render lines)]
+                   (logout (mock/request :post "/out")))]
+    (is (= [:session nil] (find response :session)) "the session is ended")
+    (is (= ["auth-base: :on-logout failed with clojure.lang.ExceptionInfo, which could not be logged; the session is ended all the same"]
+           @lines)
+        "and the failure still reaches the log, named by its class")))
+
 (deftest an-on-logout-that-throws-is-logged-and-the-session-is-ended-all-the-same
   ;; A hook that fails for a reason of its own — not the session store, whose failure is
   ;; the base's 500 whatever the handler does — so the two outcomes differ here.
@@ -498,6 +521,15 @@
         flagged  (Thread/interrupted)]
     (is (= [[:session nil] true] [(find response :session) flagged])
         "exceptions whose equals says yes to anything and whose hashCode throws are walked by identity"))
+  (doseq [[label thrown] [["a getCause that throws"
+                           (proxy [RuntimeException] ["top"] (getCause [] (throw (IllegalStateException. "cause boom"))))]
+                          ["a getCause that never ends"
+                           (letfn [(endless [] (proxy [RuntimeException] ["link"] (getCause [] (endless))))] (endless))]]]
+    (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw thrown))}})
+          ;; DELIBERATE: a hang guard, not a criterion.
+          answer (deref (future (try (lt/with-log (logout (mock/request :post "/out"))) (catch Throwable t t))) 10000 ::hung)]
+      (is (= [:session nil] (when (map? answer) (find answer :session)))
+          (str label ": the session is ended all the same, and nothing escapes: " (pr-str (class answer))))))
   (doseq [[label thrown] [["an interrupt" (InterruptedException. "stop")] ["an Error" (AssertionError. "broken")]]]
     (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw thrown))}})]
       (is (identical? thrown (try (logout (mock/request :post "/out")) nil (catch Throwable t t)))

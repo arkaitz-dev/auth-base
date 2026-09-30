@@ -195,18 +195,27 @@
   (when-not (and (string? p) (str/starts-with? p "/") (not (re-find #"[?#]" p)))
     (fail! (str k " must be a path starting with \"/\", with no query or fragment") [k] p)))
 
+(def ^:private max-causes
+  "How deep the walk for a wrapped interrupt goes: policy, far past any chain a program
+  builds (the JVM's own nest a handful deep), and short of one built to never end."
+  64)
+
 (defn- caused-by-interrupt?
-  "Whether `t`'s cause chain holds an `InterruptedException`. Walked with the causes seen
-  so far, because Java lets a chain close on itself and a plain walk would never end — and
-  seen by identity, since an exception's own `equals` and `hashCode` are the host's code
-  and may throw, or answer anything."
+  "Whether `t`'s cause chain holds an `InterruptedException`. Everything an exception
+  answers is the host's code — `getCause`, `equals`, `hashCode` — so the walk is by
+  identity, stops at a cause it has seen (Java lets a chain close on itself), stops after
+  `max-causes` (a `getCause` may mint a new one on every call), and answers false if
+  `getCause` throws: a question about a failed hook must never fail the sign-out."
   [^Throwable t]
   (let [seen (java.util.IdentityHashMap.)]
-    (loop [^Throwable t t]
-      (cond (nil? t)                            false
-            (.containsKey seen t)               false
-            (instance? InterruptedException t)  true
-            :else                               (do (.put seen t true) (recur (.getCause t)))))))
+    (try
+      (loop [^Throwable t t depth 0]
+        (cond (nil? t)                            false
+              (<= max-causes depth)               false
+              (.containsKey seen t)               false
+              (instance? InterruptedException t)  true
+              :else                               (do (.put seen t true) (recur (.getCause t) (inc depth)))))
+      (catch Exception _ false))))
 
 (defn handlers
   "The handlers, as a map — the redemption path's GET is `:confirm`, its POST
@@ -244,7 +253,9 @@
                    `:session/key` and session name the session the logout deletes: the
                    host's own record of this device goes in the same act. Its answer is
                    ignored, and an exception it throws is logged and the session ended
-                   all the same (since 0.10.0). A session store that itself fails still
+                   all the same (since 0.10.0) — named by its class alone when the
+                   logging backend cannot render it. An Error passes, whether the hook
+                   or the backend's rendering of the hook's exception raises it. A session store that itself fails still
                    leaves the logout unfinished: that is the base's 500
     :on-revoke     `(fn [request subject])`, called after `revoke!` has moved the
                    subject's generation — so a host's failure there never leaves a
@@ -377,7 +388,13 @@
                 ;; its flag is put back for whoever reads it next.
                 (when (caused-by-interrupt? e)
                   (.interrupt (Thread/currentThread)))
-                (log/warn e "auth-base: :on-logout failed; the session is ended all the same"))))
+                ;; The backend renders the host's exception — its causes, its message — and
+                ;; that is host code too: a failure there must not undo the sign-out either.
+                ;; An Error passes, as one from the hook itself does.
+                (try (log/warn e "auth-base: :on-logout failed; the session is ended all the same")
+                     (catch Exception _
+                       (log/warn (str "auth-base: :on-logout failed with " (.getName (class e))
+                                      ", which could not be logged; the session is ended all the same")))))))
        (signed-out))}
 
       revoke-path
