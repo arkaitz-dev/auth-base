@@ -4,7 +4,7 @@
             [release]))
 
 (def lib 'dev.arkaitz/auth-base)
-(def version "0.9.1")
+(def version "0.10.0")
 (def url "https://github.com/arkaitz-dev/auth-base")
 (def class-dir "target/classes")
 (def jar-file (format "target/%s-%s.jar" (name lib) version))

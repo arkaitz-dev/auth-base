@@ -6,7 +6,7 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.10.0 — unreleased
+## 0.10.0 — 2026-09-30
 
 - **Changed:** an `:on-logout` that throws no longer leaves the person signed in. The
   exception is logged through tools.logging, with its stack and nothing from the request,
