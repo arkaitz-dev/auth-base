@@ -464,7 +464,9 @@
         request (assoc (mock/request :post "/out") :session {:ab/subject {:id 1}}
                        :headers {"cookie" "ring-session=SECRET-COOKIE"})]
     (lt/with-log
-      (let [response (logout request)]
+      (let [response (logout request)
+            ;; Read at once: whatever runs next may consume the flag.
+            flagged  (Thread/interrupted)]
         (is (= [303 "/bye" [:session nil]]
                [(:status response) (get-in response [:headers "Location"]) (find response :session)])
             "the person asked to leave, and is signed out: the logout's own response, the session deleted")
@@ -472,12 +474,21 @@
                (mapv (juxt :level :message #(some-> % :throwable ex-message)) (lt/the-log)))
             "the hook's failure is logged once, with the exception it threw")
         (is (not (str/includes? (pr-str (lt/the-log)) "SECRET-COOKIE"))
-            "and nothing from the request, which carries the cookie"))))
+            "and nothing from the request, which carries the cookie")
+        (is (false? flagged) "an ordinary failure of the hook leaves the thread uninterrupted"))))
   (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw (ex-info "wrapped" {} (InterruptedException. "stop"))))}})
         response (lt/with-log (logout (mock/request :post "/out")))
         flagged  (Thread/interrupted)]
     (is (= [[:session nil] true] [(find response :session) flagged])
         "an interrupt the hook wrapped still ends the session, and the thread's flag is put back"))
+  (let [a (RuntimeException. "a")
+        b (RuntimeException. "b" a)
+        _ (.initCause a b)
+        {:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw a))}})
+        ;; DELIBERATE: a hang guard, not a criterion — the chain closes on itself.
+        answer (deref (future (lt/with-log (logout (mock/request :post "/out")))) 10000 ::hung)]
+    (is (= [:session nil] (when (map? answer) (find answer :session)))
+        (str "a hook exception whose causes close on themselves is still logged and the session ended: " answer)))
   (doseq [[label thrown] [["an interrupt" (InterruptedException. "stop")] ["an Error" (AssertionError. "broken")]]]
     (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw thrown))}})]
       (is (identical? thrown (try (logout (mock/request :post "/out")) nil (catch Throwable t t)))

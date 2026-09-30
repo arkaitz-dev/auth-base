@@ -195,6 +195,16 @@
   (when-not (and (string? p) (str/starts-with? p "/") (not (re-find #"[?#]" p)))
     (fail! (str k " must be a path starting with \"/\", with no query or fragment") [k] p)))
 
+(defn- caused-by-interrupt?
+  "Whether `t`'s cause chain holds an `InterruptedException`. Walked with the causes seen
+  so far, because Java lets a chain close on itself and a plain walk would never end."
+  [^Throwable t]
+  (loop [t t seen #{}]
+    (cond (nil? t)                            false
+          (contains? seen t)                  false
+          (instance? InterruptedException t)  true
+          :else                               (recur (.getCause t) (conj seen t)))))
+
 (defn handlers
   "The handlers, as a map — the redemption path's GET is `:confirm`, its POST
   `:redeem`, and `:revoke` is there only under a `:revoke-path`. Mount them yourself,
@@ -362,7 +372,7 @@
               (catch Exception e
                 ;; An interrupt wrapped in the hook's own exception is still the thread's:
                 ;; its flag is put back for whoever reads it next.
-                (when (some #(instance? InterruptedException %) (take-while some? (iterate ex-cause e)))
+                (when (caused-by-interrupt? e)
                   (.interrupt (Thread/currentThread)))
                 (log/warn e "auth-base: :on-logout failed; the session is ended all the same"))))
        (signed-out))}
