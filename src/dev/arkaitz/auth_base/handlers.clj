@@ -197,13 +197,16 @@
 
 (defn- caused-by-interrupt?
   "Whether `t`'s cause chain holds an `InterruptedException`. Walked with the causes seen
-  so far, because Java lets a chain close on itself and a plain walk would never end."
+  so far, because Java lets a chain close on itself and a plain walk would never end — and
+  seen by identity, since an exception's own `equals` and `hashCode` are the host's code
+  and may throw, or answer anything."
   [^Throwable t]
-  (loop [t t seen #{}]
-    (cond (nil? t)                            false
-          (contains? seen t)                  false
-          (instance? InterruptedException t)  true
-          :else                               (recur (.getCause t) (conj seen t)))))
+  (let [seen (java.util.IdentityHashMap.)]
+    (loop [^Throwable t t]
+      (cond (nil? t)                            false
+            (.containsKey seen t)               false
+            (instance? InterruptedException t)  true
+            :else                               (do (.put seen t true) (recur (.getCause t)))))))
 
 (defn handlers
   "The handlers, as a map — the redemption path's GET is `:confirm`, its POST

@@ -489,6 +489,15 @@
         answer (deref (future (lt/with-log (logout (mock/request :post "/out")))) 10000 ::hung)]
     (is (= [:session nil] (when (map? answer) (find answer :session)))
         (str "a hook exception whose causes close on themselves is still logged and the session ended: " answer)))
+  (let [liar  (fn [msg cause] (proxy [RuntimeException] [^String msg ^Throwable cause]
+                                (equals [_] true)
+                                (hashCode [] (throw (IllegalStateException. "hash boom")))))
+        chain (liar "top" (liar "mid" (InterruptedException. "stop")))
+        {:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw chain))}})
+        response (lt/with-log (logout (mock/request :post "/out")))
+        flagged  (Thread/interrupted)]
+    (is (= [[:session nil] true] [(find response :session) flagged])
+        "exceptions whose equals says yes to anything and whose hashCode throws are walked by identity"))
   (doseq [[label thrown] [["an interrupt" (InterruptedException. "stop")] ["an Error" (AssertionError. "broken")]]]
     (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw thrown))}})]
       (is (identical? thrown (try (logout (mock/request :post "/out")) nil (catch Throwable t t)))
