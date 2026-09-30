@@ -360,6 +360,10 @@
          (try (on-logout request)
               (catch InterruptedException e (throw e))
               (catch Exception e
+                ;; An interrupt wrapped in the hook's own exception is still the thread's:
+                ;; its flag is put back for whoever reads it next.
+                (when (some #(instance? InterruptedException %) (take-while some? (iterate ex-cause e)))
+                  (.interrupt (Thread/currentThread)))
                 (log/warn e "auth-base: :on-logout failed; the session is ended all the same"))))
        (signed-out))}
 

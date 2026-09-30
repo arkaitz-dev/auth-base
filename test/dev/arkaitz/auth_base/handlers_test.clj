@@ -473,6 +473,11 @@
             "the hook's failure is logged once, with the exception it threw")
         (is (not (str/includes? (pr-str (lt/the-log)) "SECRET-COOKIE"))
             "and nothing from the request, which carries the cookie"))))
+  (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw (ex-info "wrapped" {} (InterruptedException. "stop"))))}})
+        response (lt/with-log (logout (mock/request :post "/out")))
+        flagged  (Thread/interrupted)]
+    (is (= [[:session nil] true] [(find response :session) flagged])
+        "an interrupt the hook wrapped still ends the session, and the thread's flag is put back"))
   (doseq [[label thrown] [["an interrupt" (InterruptedException. "stop")] ["an Error" (AssertionError. "broken")]]]
     (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw thrown))}})]
       (is (identical? thrown (try (logout (mock/request :post "/out")) nil (catch Throwable t t)))
