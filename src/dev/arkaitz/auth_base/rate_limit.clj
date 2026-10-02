@@ -13,6 +13,10 @@
   table. The cost is real and is the price of the bound: a key that was being
   counted can be forgotten and let back in inside its own window.
 
+  The table is this process's. Behind N instances a source gets N times the limit, and a
+  restart forgets every window: a limit shared between instances is a function of the
+  host's own over storage they share, handed to the ceremony in place of this one.
+
   Under a fixed window the oldest window is also the first to expire, so
   dropping the oldest already drops an expired one whenever there is any. A
   pass that removed the expired ones first would decide exactly the same thing

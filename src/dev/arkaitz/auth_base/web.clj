@@ -146,7 +146,9 @@
 (defn sign-out
   "A sign-out form for a signed-in page, posting to `:logout-path`; with a
   `:revoke-path`, a second button signs out everywhere. `opts` are the ones given to
-  `plugin`, of which only the paths are read."
+  `plugin`, of which only the paths are read: hand it the same map, kept in one var,
+  since web-base calls no plugin and this form cannot ask where the routes were mounted.
+  With the default paths, `(sign-out request)`."
   ([request] (sign-out request {}))
   ([request opts]
    (let [{:keys [logout-path revoke-path]} (paths opts)]
@@ -160,7 +162,7 @@
 (defn identity
   "For web-base's shell `:identity` slot: `sign-out` when the request has a subject, a
   link to the login page when it has none — a link and not a form, so an anonymous page
-  writes no CSRF token into a session."
+  writes no CSRF token into a session. `opts` as for `sign-out`."
   ([request] (identity request {}))
   ([request opts]
    (if (some? (:wb/subject request))
@@ -179,7 +181,8 @@
   `:login-path` to web-base, and a host's own `:login-path` would win over it while the
   routes stayed where this one mounts them: the gate would send people to a page nobody
   serves. Hand the same map to `identity` and `sign-out`, so their buttons post where the
-  routes are.
+  routes are; with the default paths, none. The rate limit's table is this process's: N
+  instances allow N times `:limit`.
 
   The routes also carry `wrap-revoked`, so a revoked session's cookie is thrown away at
   the login page; the host's own routes take it as route middleware if it wants the

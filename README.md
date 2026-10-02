@@ -46,6 +46,36 @@ test resolves the real classpath a consumer of this library gets and refuses any
 that has not been decided by name, with its reason. Only `dev.arkaitz.auth-base.web` and
 `.testing` load web-base; another scan says so.
 
+## Quick start
+
+Under web-base, with db-base for the database: the tables come from this jar, the
+pages from the plugin, and the one thing you write is how a link reaches its owner.
+
+```clojure
+;; config.edn, db-base's key: auth-base's tables, migrated before yours
+:libraries [{:dir "dev/arkaitz/auth_base/migrations" :table "auth_base_migrations" :lock-wait-ms 5000}]
+
+;; at boot, `db` being what db-base's start returned
+(require '[dev.arkaitz.auth-base :as auth] '[dev.arkaitz.auth-base.jdbc :as auth-jdbc]
+         '[dev.arkaitz.auth-base.web :as auth-web] '[dev.arkaitz.db-base.web :as db-web]
+         '[dev.arkaitz.web-base :as wb])
+(def ds (auth-jdbc/check! (:datasource db)))
+(def ceremony (auth/ceremony {:store      (auth-jdbc/store ds)
+                              :deliver!   my-mailer   ; (fn [identifier link])
+                              :link       {:base-url "https://example.com" :redeem-path "/login/redeem"}
+                              :on-unknown #(auth-jdbc/register! ds %)}))
+(wb/handler {:plugins [(db-web/plugin db {:session {:lifetime-ms (* 14 24 3600 1000)}})
+                       (auth-web/plugin ceremony {:layouts [my-layout]})]
+             :i18n    {:default-locale :en}
+             :routes  my-routes})
+
+;; in your layout, sign out or a link to sign in
+(auth-web/identity request)
+```
+
+A route with `:wb/gate` now sends a visitor to `/login` and back. The rest of this file is
+what each of those lines means and what to change.
+
 ## What it gives you
 
 - **Three calls.** `issue!`, `redeem!`, `revoke!`. The method — magic links by email —
@@ -165,7 +195,10 @@ That line brings the login routes with the standard view rendered inside your
 on its own; `(wb/expand config)` shows the result. **Give the paths to the plugin, never
 to your own config**: a `:login-path` of yours would win over the plugin's while its
 routes stayed where it mounted them, and the gate would send people to a page nobody
-serves. Keep them in one map and hand it to `identity` and `sign-out` too. `:i18n :default-locale` is required once a plugin brings a dictionary: the
+serves. With the default paths there is nothing to repeat: `(auth-web/identity
+request)`. With your own — a `:revoke-path` for "sign out everywhere" — keep them in one
+map and hand that same map to `identity` and `sign-out`: web-base calls no plugin, so
+the buttons on your pages cannot ask the plugin where it mounted its routes. `:i18n :default-locale` is required once a plugin brings a dictionary: the
 language is yours to choose, and so are the others — the pages speak English and Spanish,
 but a site serves only the languages it lists in `:i18n :locales` (web-base 0.12.0), the
 default alone when it lists none. `{:default-locale :en :locales [:en :es]}` serves both. The plugin takes the handlers' options below, defaulting
@@ -455,7 +488,12 @@ store never loads it (tested with next.jdbc 1.3.1048, on H2 and SQLite).
 ```
 
 `ds` is a `javax.sql.DataSource` you opened — from db-base, `(:datasource db)` — and
-never a handle or a map, which is refused by name. **Keep `:on-unknown`**: this store
+never a handle or a map, which is refused by name. Every host of this store builds the
+same ceremony: `:store` and `:on-unknown` over **one** `ds`, so that the subject
+`register!` answers is the one `subject-for` reads back — the ceremony checks that, and
+a hook over another pool would see it refuse every new account. The rest is yours:
+`:deliver!`, `:link` and `:ttl-ms` belong to your mail and your site, not to the
+storage, which is why no constructor here bundles them. **Keep `:on-unknown`**: this store
 creates no account on its own, so without the hook an address it has never seen is
 answered as a link that does not work, every time, and nothing is logged — the whole
 sign-up path is closed and the sign-in path looks healthy.
@@ -548,6 +586,11 @@ abuse and does not end it. Behind a proxy
 `:remote-addr` is the proxy's address unless your stack is told which entry of
 `X-Forwarded-For` to trust — web-base's `:security {:proxy-hops n}`, one per proxy you
 run.
+
+**The window is kept per process.** Behind N instances a source gets N times the limit,
+and `:max-keys` counts per instance; a restart forgets every window. To share the limit,
+give `:rate-limit` a function of your own over a store the instances share — it may
+answer a decision built with `auth/fixed-window-decider`'s shape, below.
 
 A refused request is a `429` with `Cache-Control: no-store` whose body is your `:view`
 in its `{:limited? true}` state — the page the person was on, and a reason — and not an
