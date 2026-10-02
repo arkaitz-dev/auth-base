@@ -470,76 +470,125 @@
           (when throwable (throw (IllegalStateException. "the backend could not render it")))
           (swap! lines conj message))))))
 
-(deftest a-backend-that-cannot-log-the-hooks-exception-does-not-undo-the-sign-out
-  (let [lines (atom [])
-        {:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw (ex-info "device table gone" {})))}})
-        response (binding [clojure.tools.logging/*logger-factory* (logging-that-cannot-render lines)]
-                   (logout (mock/request :post "/out")))]
-    (is (= [:session nil] (find response :session)) "the session is ended")
-    (is (= ["auth-base: :on-logout failed with clojure.lang.ExceptionInfo, which could not be logged; the session is ended all the same"]
-           @lines)
-        "and the failure still reaches the log, named by its class")))
-
-(deftest an-on-logout-that-throws-is-logged-and-the-session-is-ended-all-the-same
-  ;; A hook that fails for a reason of its own — not the session store, whose failure is
-  ;; the base's 500 whatever the handler does — so the two outcomes differ here.
-  (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw (ex-info "device table gone" {})))}})
-        request (assoc (mock/request :post "/out") :session {:ab/subject {:id 1}}
-                       :headers {"cookie" "ring-session=SECRET-COOKIE"})]
-    (lt/with-log
-      (let [response (logout request)
-            ;; Read at once: whatever runs next may consume the flag.
-            flagged  (Thread/interrupted)]
-        (is (= [303 "/bye" [:session nil]]
-               [(:status response) (get-in response [:headers "Location"]) (find response :session)])
-            "the person asked to leave, and is signed out: the logout's own response, the session deleted")
-        (is (= [[:warn "auth-base: :on-logout failed; the session is ended all the same" "device table gone"]]
-               (mapv (juxt :level :message #(some-> % :throwable ex-message)) (lt/the-log)))
-            "the hook's failure is logged once, with the exception it threw")
-        (is (not (str/includes? (pr-str (lt/the-log)) "SECRET-COOKIE"))
-            "and nothing from the request, which carries the cookie")
-        (is (false? flagged) "an ordinary failure of the hook leaves the thread uninterrupted"))))
-  (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw (ex-info "wrapped" {} (InterruptedException. "stop"))))}})
-        response (lt/with-log (logout (mock/request :post "/out")))
-        flagged  (Thread/interrupted)]
-    (is (= [[:session nil] true] [(find response :session) flagged])
-        "an interrupt the hook wrapped still ends the session, and the thread's flag is put back"))
-  (let [a (RuntimeException. "a")
-        b (RuntimeException. "b" a)
-        _ (.initCause a b)
-        {:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw a))}})
-        ;; DELIBERATE: a hang guard, not a criterion — the chain closes on itself.
-        answer (deref (future (lt/with-log (logout (mock/request :post "/out")))) 10000 ::hung)]
-    (is (= [:session nil] (when (map? answer) (find answer :session)))
-        (str "a hook exception whose causes close on themselves is still logged and the session ended: " answer)))
-  (let [liar  (fn [msg cause] (proxy [RuntimeException] [^String msg ^Throwable cause]
-                                (equals [_] true)
-                                (hashCode [] (throw (IllegalStateException. "hash boom")))))
-        chain (liar "top" (liar "mid" (InterruptedException. "stop")))
-        {:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw chain))}})
-        response (lt/with-log (logout (mock/request :post "/out")))
-        flagged  (Thread/interrupted)]
-    (is (= [[:session nil] true] [(find response :session) flagged])
-        "exceptions whose equals says yes to anything and whose hashCode throws are walked by identity"))
-  (doseq [[label thrown] [["a getCause that throws"
-                           (proxy [RuntimeException] ["top"] (getCause [] (throw (IllegalStateException. "cause boom"))))]
-                          ["a getCause that never ends"
-                           (letfn [(endless [] (proxy [RuntimeException] ["link"] (getCause [] (endless))))] (endless))]]]
-    (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw thrown))}})
-          ;; DELIBERATE: a hang guard, not a criterion.
-          answer (deref (future (try (lt/with-log (logout (mock/request :post "/out"))) (catch Throwable t t))) 10000 ::hung)]
-      (is (= [:session nil] (when (map? answer) (find answer :session)))
-          (str label ": the session is ended all the same, and nothing escapes: " (pr-str (class answer))))))
-  (doseq [[label thrown] [["an interrupt" (InterruptedException. "stop")] ["an Error" (AssertionError. "broken")]]]
-    (let [{:keys [logout]} (fixture {:extra {:on-logout (fn [_] (throw thrown))}})]
-      (is (identical? thrown (try (logout (mock/request :post "/out")) nil (catch Throwable t t)))
-          (str label " is not a failure of the hook, and passes")))))
-
 (defn- signed-in
   "A request carrying the session a redemption of `identifier`'s link established."
   [{:keys [redeem] :as f} identifier path]
   (assoc (mock/request :post path)
          :session (:session (redeem (mock/request :post (str "/entrar/" (issued! f identifier)))))))
+
+;; The two hooks that run after a security act — the sign-out, the revocation — and are
+;; held to one rule: whatever the hook throws, that act stands and this session ends.
+(def ^:private hooks [:on-logout :on-revoke])
+
+(defn- hook-run
+  "A thunk answering the response of the handler `hook` belongs to, with `hook` set to
+  `f` (called with whatever the hook is handed), on a request that reaches it — for
+  `:on-revoke`, a signed-in session — and the fixture, whose `:other` is a second session
+  of the same subject."
+  [hook f]
+  (case hook
+    :on-logout (let [{:keys [logout] :as fx} (fixture {:extra {:on-logout (fn [& args] (apply f args))}})]
+                 [#(logout (assoc (mock/request :post "/out") :session {:ab/subject {:id 1}}
+                                  :headers {"cookie" "ring-session=SECRET-COOKIE"}))
+                  fx])
+    :on-revoke (let [{:keys [revoke] :as fx} (fixture {:subjects {"ada@x.test" {:id 1}}
+                                                       :extra    {:revoke-path "/everywhere"
+                                                                  :on-revoke   (fn [& args] (apply f args))}})
+                     request (assoc (signed-in fx "ada@x.test" "/everywhere")
+                                    :headers {"cookie" "ring-session=SECRET-COOKIE"})]
+                 [#(revoke request) (assoc fx :other (signed-in fx "ada@x.test" "/"))])))
+
+(deftest a-backend-that-cannot-log-the-hooks-exception-does-not-undo-the-sign-out
+  (doseq [hook hooks]
+    (let [lines (atom [])
+          [run] (hook-run hook (fn [& _] (throw (ex-info "device table gone" {}))))
+          response (binding [clojure.tools.logging/*logger-factory* (logging-that-cannot-render lines)]
+                     (run))]
+      (is (= [:session nil] (find response :session)) (str hook ": the session is ended"))
+      (is (= [(str "auth-base: " hook " failed with clojure.lang.ExceptionInfo, which could not be logged; the session is ended all the same")]
+             @lines)
+          (str hook ": and the failure still reaches the log, named by its class")))))
+
+(deftest a-hook-that-throws-is-logged-and-the-session-is-ended-all-the-same
+  ;; A hook that fails for a reason of its own — not the session store, whose failure is
+  ;; the base's 500 whatever the handler does — so the two outcomes differ here.
+  (doseq [hook hooks]
+    (let [[run {:keys [ceremony other]}] (hook-run hook (fn [& _] (throw (ex-info "device table gone" {}))))]
+      (when other
+        (is (= {:id 1} ((session/subject-fn ceremony) other))
+            (str hook ": witness: another session of the subject names it before the revocation")))
+      (lt/with-log
+        (let [response (run)
+              ;; Read at once: whatever runs next may consume the flag.
+              flagged  (Thread/interrupted)]
+          (is (= [303 "/bye" [:session nil]]
+                 [(:status response) (get-in response [:headers "Location"]) (find response :session)])
+              (str hook ": the handler's own response, the session deleted"))
+          (is (= [[:warn (str "auth-base: " hook " failed; the session is ended all the same") "device table gone"]]
+                 (mapv (juxt :level :message #(some-> % :throwable ex-message)) (lt/the-log)))
+              (str hook ": the hook's failure is logged once, with the exception it threw"))
+          (is (not (str/includes? (pr-str (lt/the-log)) "SECRET-COOKIE"))
+              (str hook ": and nothing from the request, which carries the cookie"))
+          (is (false? flagged) (str hook ": an ordinary failure of the hook leaves the thread uninterrupted"))
+          (when other
+            (is (nil? ((session/subject-fn ceremony) other))
+                (str hook ": and the revocation it followed stands: another session of the subject names nobody")))))))
+  (doseq [hook hooks]
+    (let [[run] (hook-run hook (fn [& _] (throw (ex-info "wrapped" {} (InterruptedException. "stop")))))
+          response (lt/with-log (run))
+          flagged  (Thread/interrupted)]
+      (is (= [[:session nil] true] [(find response :session) flagged])
+          (str hook ": an interrupt the hook wrapped still ends the session, and the thread's flag is put back"))))
+  (doseq [hook hooks]
+    (let [a (RuntimeException. "a")
+          b (RuntimeException. "b" a)
+          _ (.initCause a b)
+          [run] (hook-run hook (fn [& _] (throw a)))
+          ;; DELIBERATE: a hang guard, not a criterion — the chain closes on itself.
+          answer (deref (future (lt/with-log (run))) 10000 ::hung)]
+      (is (= [:session nil] (when (map? answer) (find answer :session)))
+          (str hook ": a hook exception whose causes close on themselves is still logged and the session ended: " answer))))
+  (doseq [hook hooks]
+    (let [liar  (fn [msg cause] (proxy [RuntimeException] [^String msg ^Throwable cause]
+                                  (equals [_] true)
+                                  (hashCode [] (throw (IllegalStateException. "hash boom")))))
+          chain (liar "top" (liar "mid" (InterruptedException. "stop")))
+          [run] (hook-run hook (fn [& _] (throw chain)))
+          response (lt/with-log (run))
+          flagged  (Thread/interrupted)]
+      (is (= [[:session nil] true] [(find response :session) flagged])
+          (str hook ": exceptions whose equals says yes to anything and whose hashCode throws are walked by identity"))))
+  (doseq [hook hooks
+          [label thrown] [["a getCause that throws"
+                           (proxy [RuntimeException] ["top"] (getCause [] (throw (IllegalStateException. "cause boom"))))]
+                          ["a getCause that never ends"
+                           (letfn [(endless [] (proxy [RuntimeException] ["link"] (getCause [] (endless))))] (endless))]]]
+    (let [[run] (hook-run hook (fn [& _] (throw thrown)))
+          ;; DELIBERATE: a hang guard, not a criterion.
+          answer (deref (future (try (lt/with-log (run)) (catch Throwable t t))) 10000 ::hung)]
+      (is (= [:session nil] (when (map? answer) (find answer :session)))
+          (str hook ", " label ": the session is ended all the same, and nothing escapes: " (pr-str (class answer))))))
+  (doseq [hook hooks
+          [label thrown] [["an interrupt" (InterruptedException. "stop")] ["an Error" (AssertionError. "broken")]]]
+    (let [[run] (hook-run hook (fn [& _] (throw thrown)))]
+      (is (identical? thrown (try (run) nil (catch Throwable t t)))
+          (str hook ": " label " is not a failure of the hook, and passes")))))
+
+(deftest a-revocation-that-fails-is-not-the-hooks-and-still-fails-the-request
+  (let [told (atom 0)
+        {:keys [revoke] :as f} (fixture {:subjects {"ada@x.test" {:id 1}}
+                                         :extra    {:revoke-path "/everywhere"
+                                                    :on-revoke   (fn [_ _] (swap! told inc))}})]
+    (is (= [303 1] [(:status (revoke (signed-in f "ada@x.test" "/everywhere"))) @told])
+        "control: a revocation that works signs out and tells the host once"))
+  (let [told (atom 0)
+        {:keys [revoke] :as f} (fixture {:subjects {"ada@x.test" {:id 1}} :forbid #{:bump-generation!}
+                                         :extra    {:revoke-path "/everywhere"
+                                                    :on-revoke   (fn [_ _] (swap! told inc))}})
+        thrown (try (revoke (signed-in f "ada@x.test" "/everywhere")) nil (catch clojure.lang.ExceptionInfo e e))]
+    (is (= "the test forbids :bump-generation!" (ex-message thrown))
+        "a store that cannot move the generation fails the request with its own error, never a sign-out")
+    (is (= 0 @told) "and the host is not told of a revocation that did not happen")))
 
 (deftest revoke-path-ends-every-session-of-the-subject--then-tells-the-host--then-ends-this-one
   (let [seen (atom [])

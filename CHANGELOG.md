@@ -16,6 +16,10 @@ the README says "since" beside the behaviour. Every release is on Clojars as
   **Upgrade step on SQLite:** a bootstrap identity revoked before this version was
   recorded under the printed form, which nothing reads any more, so its revoked sessions
   would be live again — revoke every bootstrap identity once more after upgrading.
+- **Changed:** an `:on-revoke` that throws is treated as an `:on-logout` that throws has
+  been since 0.10.0: logged, and this session ended all the same, where it used to answer
+  a 500 for a revocation that had already happened. A `revoke!` that fails is not the
+  hook's, and still fails the request without calling it.
 - **Changed:** the JDBC store refuses a subject that is neither a string nor a bootstrap
   identity, naming its class, where it used to hand it to the engine. No subject the
   ceremony establishes over this store is either.

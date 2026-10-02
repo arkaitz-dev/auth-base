@@ -217,6 +217,27 @@
               :else                               (do (.put seen t true) (recur (.getCause t) (inc depth)))))
       (catch Exception _ false))))
 
+(defn- run-hook!
+  "Calls a host's hook that runs after the security act is done — the sign-out, the
+  revocation — so that its failure costs the host's own record and never that act:
+  logged with its stack and nothing from the request, which carries the cookie, and
+  swallowed. An interrupt and an Error are not failures of the hook and pass; an
+  interrupt the hook wrapped in its own exception is still the thread's, and its flag
+  is put back for whoever reads it next. The backend renders the host's exception — its
+  causes, its message — and that is host code too, so a failure there is logged by the
+  exception's class alone."
+  [hook-name f]
+  (try (f)
+       (catch InterruptedException e (throw e))
+       (catch Exception e
+         (when (caused-by-interrupt? e)
+           (.interrupt (Thread/currentThread)))
+         (try (log/warn e (str "auth-base: " hook-name " failed; the session is ended all the same"))
+              (catch Exception _
+                (log/warn (str "auth-base: " hook-name " failed with " (.getName (class e))
+                               ", which could not be logged; the session is ended all the same"))))))
+  nil)
+
 (defn handlers
   "The handlers, as a map — the redemption path's GET is `:confirm`, its POST
   `:redeem`, and `:revoke` is there only under a `:revoke-path`. Mount them yourself,
@@ -259,7 +280,10 @@
                    leaves the logout unfinished: that is the base's 500
     :on-revoke     `(fn [request subject])`, called after `revoke!` has moved the
                    subject's generation — so a host's failure there never leaves a
-                   revocation undone — and before this session is ended
+                   revocation undone — and before this session is ended. Its return
+                   is ignored, and an exception it throws is treated as `:on-logout`'s
+                   is (since 0.11.0): logged, and this session ended all the same. A
+                   `revoke!` that fails is not the hook's, and still fails the request
 
   The POST handler reads `:form-params`, so the host's stack must have parsed
   the body — `ring.middleware.params/wrap-params`, which web-base already
@@ -377,24 +401,8 @@
      :logout
      (fn [request]
        ;; The person asked to leave, and leaving is the security act: a host's hook that
-       ;; fails costs its own record of the device, never the sign-out. Logged with its
-       ;; stack and nothing from the request, which carries the cookie; an interrupt and
-       ;; an Error are not failures of the hook and pass (since 0.10.0).
-       (when on-logout
-         (try (on-logout request)
-              (catch InterruptedException e (throw e))
-              (catch Exception e
-                ;; An interrupt wrapped in the hook's own exception is still the thread's:
-                ;; its flag is put back for whoever reads it next.
-                (when (caused-by-interrupt? e)
-                  (.interrupt (Thread/currentThread)))
-                ;; The backend renders the host's exception — its causes, its message — and
-                ;; that is host code too: a failure there must not undo the sign-out either.
-                ;; An Error passes, as one from the hook itself does.
-                (try (log/warn e "auth-base: :on-logout failed; the session is ended all the same")
-                     (catch Exception _
-                       (log/warn (str "auth-base: :on-logout failed with " (.getName (class e))
-                                      ", which could not be logged; the session is ended all the same")))))))
+       ;; fails costs its own record of the device, never the sign-out (since 0.10.0).
+       (when on-logout (run-hook! ":on-logout" #(on-logout request)))
        (signed-out))}
 
       revoke-path
@@ -406,7 +414,7 @@
                  (fn [request]
                    (when-some [subject (subject-of request)]
                      (ceremony/revoke! ceremony subject)
-                     (when on-revoke (on-revoke request subject)))
+                     (when on-revoke (run-hook! ":on-revoke" #(on-revoke request subject))))
                    (signed-out)))))))
 
 (defn routes

@@ -214,9 +214,12 @@ the same pattern with `\\.` in a `native-image.properties`.
 
 **Signing out**: `:on-logout (fn [request])` is handed the logout's request, whose
 `:session/key` names the session being deleted — where a host forgets its record of the
-device. If it throws, the session is not ended.
-`:revoke-path` is a POST that signs the subject out everywhere: `revoke!`, then
-`:on-revoke (fn [request subject])`, then this session ended.
+device. `:revoke-path` is a POST that signs the subject out everywhere: `revoke!`, then
+`:on-revoke (fn [request subject])`, then this session ended. Either hook that throws is
+logged, with its stack and nothing from the request, and the session is ended all the
+same (`:on-logout` since 0.10.0, `:on-revoke` since 0.11.0): the sign-out and the
+revocation are the security acts, and a host's record of a device is not. An interrupt
+and an `Error` pass, and a `revoke!` that fails still fails the request.
 
 ### Wiring it with Integrant
 
@@ -525,8 +528,8 @@ something to name when there is no local identity at all.
 | `:login-path` | where the form lives (required) |
 | `:logout-path` | where the logout POST goes (default `/logout`) |
 | `:revoke-path` | a POST that signs the subject out everywhere, landing on `:after-logout` (since 0.9.0; default none) |
-| `:on-logout` | `(fn [request])`, before a logout ends the session (since 0.9.0) |
-| `:on-revoke` | `(fn [request subject])`, after `revoke!` and before this session ends (since 0.9.0) |
+| `:on-logout` | `(fn [request])`, before a logout ends the session (since 0.9.0); an exception it throws is logged and the session ended all the same (since 0.10.0) |
+| `:on-revoke` | `(fn [request subject])`, after `revoke!` and before this session ends (since 0.9.0); an exception it throws is logged and the session ended all the same (since 0.11.0) |
 | `:after-login` | where a redeemed link lands (default `/`) |
 | `:after-logout` | where a logout lands (default `:login-path`) |
 | `:field` | the form field holding the identifier (default `identifier`) |
