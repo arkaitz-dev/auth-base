@@ -6,8 +6,9 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.11.0 — unreleased
+## 0.11.0 — 2026-10-02
 
+- On web-base 0.14.0, whose jar registers its own assets for a native image.
 - **Fixed:** a bootstrap identity over the JDBC store. Its subject — the map
   `{:ab/identifier … :ab/bootstrap? true}` — was bound to the generation column as it was:
   H2 refused it once that table held a row, PostgreSQL could not type it, so the
