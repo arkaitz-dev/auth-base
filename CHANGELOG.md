@@ -6,6 +6,20 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.11.0 — unreleased
+
+- **Fixed:** a bootstrap identity over the JDBC store. Its subject — the map
+  `{:ab/identifier … :ab/bootstrap? true}` — was bound to the generation column as it was:
+  H2 refused it once that table held a row, PostgreSQL could not type it, so the
+  administrator could not sign in or be revoked, and SQLite stored the map's printed form.
+  Its generation is now kept under a version-3 UUID derived from the identifier.
+  **Upgrade step on SQLite:** a bootstrap identity revoked before this version was
+  recorded under the printed form, which nothing reads any more, so its revoked sessions
+  would be live again — revoke every bootstrap identity once more after upgrading.
+- **Changed:** the JDBC store refuses a subject that is neither a string nor a bootstrap
+  identity, naming its class, where it used to hand it to the engine. No subject the
+  ceremony establishes over this store is either.
+
 ## 0.10.0 — 2026-09-30
 
 - **Changed:** an `:on-logout` that throws no longer leaves the person signed in. The

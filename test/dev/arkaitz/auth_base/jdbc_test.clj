@@ -14,6 +14,7 @@
             [clojure.test :refer [deftest is testing]]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.jdbc :as aj]
+            [dev.arkaitz.auth-base.session :as session]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.testing :as abt]
             [dev.arkaitz.auth-base.token :as token]
@@ -272,10 +273,22 @@
 (deftest a-bump-the-engine-refuses-for-another-reason-is-rethrown-not-retried
   (on-engines
    (fn [engine ds]
-     (let [e (deref (future (try (aj/bump-generation! ds nil) nil (catch Exception e e))) 20000 ::hang)]
+     ;; Every INSERT is pointed at a table that does not exist: a refusal that is not a
+     ;; collision, with no row behind it for the re-read to find.
+     (let [inserts (atom 0)
+           refused (datasource-over ds (fn [^Method m args]
+                                         (if (and (= "prepareStatement" (.getName m))
+                                                  (str/starts-with? (str/triml (str (first args))) "INSERT"))
+                                           (do (swap! inserts inc)
+                                               (into-array Object (cons (str/replace (str (first args)) "account_generation"
+                                                                                     "no_such_table")
+                                                                        (rest args))))
+                                           args)))
+           e       (deref (future (try (aj/bump-generation! refused "s") nil (catch Exception e e))) 20000 ::hang)]
        (is (instance? SQLException e)
-           (str engine ": a null subject is the engine's refusal, not the retry bound's: " (pr-str e))))
-     (is (= 0 (count-of ds "account_generation")) (str engine ": and no row was made")))))
+           (str engine ": the engine's refusal, not the retry bound's: " (pr-str e)))
+       (is (= 1 @inserts) (str engine ": tried once, never retried")))
+     (is (= 0 (count-of ds "account_generation")) (str engine ": witness: the proxy let no INSERT through")))))
 
 ;; --- 4 · registration -----------------------------------------------------------------------
 
@@ -404,6 +417,80 @@
        (is (= [nil b] [(ceremony/redeem! c a1) (ceremony/redeem! c b1)]) (str engine ": so only the other signs in"))
        (is (= a (ceremony/redeem! c (link! ada))) (str engine ": a link asked for after it works"))
        (is (= [1 0] [(aj/generation ds a) (aj/generation ds b)]) (str engine ": and only the subject's generation moved"))))))
+
+;; The keys SPEC §12's bootstrap identities are stored under, pinned as literals computed
+;; outside this library (MD5 of the prefixed identifier's UTF-8, version 3, as Python's
+;; hashlib gives it): they are stored keys, so a change to the derivation — the prefix,
+;; the charset — is a change to what every database already holds. The second identifier
+;; is not ASCII, so a charset other than UTF-8 gives another key.
+(def ^:private root-key "52608fc4-c698-35d8-8cbc-533e41260b0d")
+(def ^:private umlaut-key "c7788acf-9f61-3613-90fe-3e945be01546")
+
+(deftest a-bootstrap-administrator-signs-in-is-revoked-and-leaves-one-generation-row-under-a-derived-key--on-both-engines
+  (on-engines
+   (fn [engine ds]
+     (let [box   (abt/mailbox)
+           c     (ceremony/ceremony {:store (aj/store ds) :deliver! (abt/deliver-into box) :clock (abt/clock 1000)
+                                     :bootstrap #{"root@x.test" "ops@x.test" "rööt@x.test"}
+                                     :link {:base-url "https://x.test" :redeem-path "/entrar"}})
+           ;; An account with a moved generation, so neither table is empty: H2 answers a
+           ;; SELECT bound to a map with no row at all, and refuses it only once one exists.
+           ada-s (aj/register! ds ada)
+           _     (aj/bump-generation! ds ada-s)
+           sign! (fn [id] (ceremony/issue! c id) (ceremony/redeem! c (abt/token-of (abt/last-link box id))))
+           admin (sign! "root@x.test")
+           _     (is (= {:ab/identifier "root@x.test" :ab/bootstrap? true} admin)
+                     (str engine ": witness: the link signs in a bootstrap identity"))
+           req   {:session (:session (session/establish c {} admin))}
+           sfn   (session/subject-fn c)]
+       (is (nil? (aj/subject-for ds "root@x.test")) (str engine ": witness: which has no account"))
+       (is (= [0 admin] [(:ab/generation (:session req)) (sfn req)])
+           (str engine ": its session is born at generation 0 and yields it"))
+       (ceremony/revoke! c admin)
+       (is (nil? (sfn req)) (str engine ": after revoke! the same session yields nothing"))
+       (ceremony/revoke! c (sign! "rööt@x.test"))
+       (is (= #{[ada-s 1] [root-key 1] [umlaut-key 1]} (set (raw ds "SELECT subject, generation FROM account_generation")))
+           (str engine ": each bootstrap identity's row moved under its name-based key — never the map's printed form"))
+       (is (= 3 (count-of ds "account_generation")) (str engine ": and no other row"))
+       (is (= 0 (aj/generation ds {:ab/identifier "ops@x.test" :ab/bootstrap? true}))
+           (str engine ": another bootstrap identity is untouched"))
+       (is (= 1 (count-of ds "account")) (str engine ": and no account was made"))
+       (is (= [nil []] [(aj/identifier-for ds admin) (store/identifiers-of (aj/store ds) admin)])
+           (str engine ": the account reads answer nothing for it, without refusing it"))
+       (let [again (sign! "root@x.test")
+             req2  {:session (:session (session/establish c {} again))}]
+         (is (= [1 admin] [(:ab/generation (:session req2)) (sfn req2)])
+             (str engine ": a link asked for after it signs in again, at the moved generation")))))))
+
+(deftest a-subject-that-is-neither-text-nor-a-bootstrap-identity-is-refused-naming-its-class-and-writes-nothing
+  (on-engines
+   (fn [engine ds]
+     (let [st (aj/store ds)
+           s  (aj/register! ds ada)]
+       (doseq [[subject class-name] [[{:id 1} "clojure.lang.PersistentArrayMap"]
+                                     [42 "java.lang.Long"]
+                                     [nil nil]
+                                     [{:ab/identifier "root@x.test" :ab/bootstrap? false} "clojure.lang.PersistentArrayMap"]
+                                     [{:ab/bootstrap? true} "clojure.lang.PersistentArrayMap"]
+                                     [{:ab/identifier 42 :ab/bootstrap? true} "clojure.lang.PersistentArrayMap"]
+                                     [{:ab/identifier "root@x.test" :ab/bootstrap? "yes"} "clojure.lang.PersistentArrayMap"]
+                                     [(random-uuid) "java.util.UUID"]]
+               [label call] [["generation" #(aj/generation ds %)]
+                             ["bump-generation!" #(aj/bump-generation! ds %)]
+                             ["identifier-for" #(aj/identifier-for ds %)]
+                             ["store generation" #(store/generation st %)]
+                             ["store bump-generation!" #(store/bump-generation! st %)]
+                             ["identifiers-of" #(store/identifiers-of st %)]]]
+         (let [e (try (call subject) nil (catch clojure.lang.ExceptionInfo e e))]
+           (is (= [(str "auth-base jdbc: a subject is the text register! returned or a bootstrap identity, not "
+                        (or class-name "nil"))
+                   {:subject-type class-name}]
+                  [(ex-message e) (ex-data e)])
+               (str engine ": " label " refuses " (pr-str subject)))))
+       (is (= [[s ada]] (raw ds "SELECT subject, identifier FROM account")) (str engine ": nothing written to account"))
+       (is (= 0 (count-of ds "account_generation")) (str engine ": nor to account_generation"))
+       (is (= [0 1 ada [ada]] [(aj/generation ds s) (aj/bump-generation! ds s) (aj/identifier-for ds s) (store/identifiers-of st s)])
+           (str engine ": control: the account's own subject is taken"))))))
 
 (deftest the-readme-hands-db-base-the-prefix-the-migrations-ship-under
   (let [readme (slurp (io/file "README.md"))

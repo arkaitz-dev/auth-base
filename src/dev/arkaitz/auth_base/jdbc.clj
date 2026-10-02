@@ -31,7 +31,9 @@
   (:require [dev.arkaitz.auth-base.store :as store]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs])
-  (:import [java.sql SQLException]
+  (:import [java.nio.charset StandardCharsets]
+           [java.sql SQLException]
+           [java.util UUID]
            [javax.sql DataSource]))
 
 (def ddl
@@ -85,6 +87,30 @@
 
 ;; --- accounts -------------------------------------------------------------------
 
+(defn- subject-key
+  "What a statement keyed by subject binds for `subject`. An account's subject is the
+  UUID text `register!` minted, as it is. A bootstrap identity (SPEC §12) has no
+  account, and the ceremony hands it over as a map, which no column can hold: bound as
+  it was, H2 refused it, SQLite stored its printed form and PostgreSQL cannot type it.
+  It is keyed instead by the name-based UUID of its identifier, as the ceremony spelt it
+  (normalised) — 36 characters, as the
+  column is, and of version 3, which no UUID `register!` mints (version 4) can equal.
+  **The derivation is a stored key**: changing the prefix would orphan every
+  generation already moved under it, so a revoked session would read 0 again.
+
+  Anything else is refused by its class, never its value: no statement of this store
+  can find it, and binding it would leave what happens to the engine."
+  [subject]
+  (cond
+    (string? subject) subject
+    (and (map? subject) (true? (:ab/bootstrap? subject)) (string? (:ab/identifier subject)))
+    (str (UUID/nameUUIDFromBytes (.getBytes (str "auth-base bootstrap " (:ab/identifier subject))
+                                            StandardCharsets/UTF_8)))
+    :else
+    (throw (ex-info (str "auth-base jdbc: a subject is the text register! returned or a bootstrap identity,"
+                         " not " (if (nil? subject) "nil" (.getName (class subject))))
+                    {:subject-type (some-> subject class .getName)}))))
+
 (defn subject-for
   "The subject behind an identifier, or nil. It creates nothing, ever — the port says
   so (auth-base SPEC §15)."
@@ -94,7 +120,7 @@
 (defn identifier-for
   "The identifier an account was registered under, or nil."
   [ds subject]
-  (:identifier (one (datasource! ds) "SELECT identifier FROM account WHERE subject = ?" subject)))
+  (:identifier (one (datasource! ds) "SELECT identifier FROM account WHERE subject = ?" (subject-key subject))))
 
 (defn register!
   "The subject for `identifier`, creating the account when there is none. Safe to call
@@ -124,7 +150,7 @@
   "The subject's revocation generation; 0 for a subject never revoked, row or not."
   [ds subject]
   (long (or (:generation (one (datasource! ds) "SELECT generation FROM account_generation WHERE subject = ?"
-                              subject))
+                              (subject-key subject)))
             0)))
 
 (def ^:private bump-attempts
@@ -138,7 +164,8 @@
   subject with no row gets one at 1, and a concurrent first revocation that inserted
   first is answered by trying again."
   [ds subject]
-  (let [ds (datasource! ds)]
+  (let [ds      (datasource! ds)
+        subject (subject-key subject)]
     (loop [attempt 1]
       (when (< bump-attempts attempt)
         (throw (ex-info (str "auth-base jdbc: the generation of a subject changed under " bump-attempts
@@ -193,7 +220,7 @@
 
   store/Challenges
   (identifiers-of [_ subject]
-    (mapv :identifier (jdbc/execute! ds ["SELECT identifier FROM account WHERE subject = ? ORDER BY identifier" subject]
+    (mapv :identifier (jdbc/execute! ds ["SELECT identifier FROM account WHERE subject = ? ORDER BY identifier" (subject-key subject)]
                                      as-maps)))
 
   ;; A DELETE per identifier, each deciding against a concurrent take the way

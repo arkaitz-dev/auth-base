@@ -478,7 +478,10 @@ Every statement is portable: `take-challenge!` reads and then deletes, and **the
 count decides** who redeemed the link; a revocation moves its generation by
 compare-and-set. `register!` answers the subject as a string, a UUID's spelling — what
 `:wb/subject` then carries and what `revoke!` takes, so a host's own tables keep it in a
-`VARCHAR(36)`. It stores the identifier as given — pass it through
+`VARCHAR(36)`. A bootstrap identity has no account, and its revocation generation is kept
+under a version-3 UUID derived from its identifier (since 0.11.0), which no subject
+`register!` mints can equal; any other subject that is not a string is refused by its
+class. It stores the identifier as given — pass it through
 `auth/normalise` when it did not come from the ceremony — and is not for use inside a
 transaction you opened. An address longer than 320 characters is refused by the engine
 — SQLite, which ignores declared widths, excepted — and reaches your error handling as
@@ -492,7 +495,8 @@ a file name can look for it, and then the directory a process started from decid
 is an administrator.
 
 On redemption, **the absence of a record is the signal**: no record, consult the list,
-and if listed they enter with **no row created anywhere**. Not "the table is empty",
+and if listed they enter with **no row created anywhere** — until one is revoked, which
+keeps its generation like any subject's. Not "the table is empty",
 which works once for the first administrator and never again. Such a subject is
 `{:ab/identifier "…" :ab/bootstrap? true}` — it says what it is, so an audit trail has
 something to name when there is no local identity at all.
