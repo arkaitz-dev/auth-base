@@ -1,0 +1,7 @@
+{
+  "resources": [
+    {"glob": "dev/arkaitz/auth_base/public/*"},
+    {"glob": "dev/arkaitz/auth_base/migrations"},
+    {"glob": "dev/arkaitz/auth_base/migrations/*"}
+  ]
+}

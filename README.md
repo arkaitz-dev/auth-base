@@ -208,9 +208,10 @@ out everywhere, under a `:revoke-path` — while an anonymous one shows a link t
 `notice`, `sign-in-form` and `confirm-form` are the view's parts, public for the same
 reason.
 
-**In a native image**, add the stylesheet to the image's resources beside web-base's:
-`-H:IncludeResources='dev/arkaitz/auth_base/public/[^/]+\.[a-z]+$'` on the command line,
-the same pattern with `\\.` in a `native-image.properties`.
+**In a native image** nothing is yours to add (since 0.11.0): the jar carries
+`META-INF/native-image/dev.arkaitz/auth-base/reachability-metadata.json`, which registers
+the stylesheet and the migrations — files and their directory, which db-base lists —
+and GraalVM reads it from the classpath on its own. It is data, never flags.
 
 **Signing out**: `:on-logout (fn [request])` is handed the logout's request, whose
 `:session/key` names the session being deleted — where a host forgets its record of the

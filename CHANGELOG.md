@@ -16,6 +16,10 @@ the README says "since" beside the behaviour. Every release is on Clojars as
   **Upgrade step on SQLite:** a bootstrap identity revoked before this version was
   recorded under the printed form, which nothing reads any more, so its revoked sessions
   would be live again — revoke every bootstrap identity once more after upgrading.
+- The jar carries its native-image metadata, registering the stylesheet and the
+  migrations (their directory too, which db-base lists): a host's image needs no
+  `-H:IncludeResources` for this library. Remove the lines naming `dev/arkaitz/auth_base`
+  from your `native-image.properties` and metadata.
 - **Changed:** an `:on-revoke` that throws is treated as an `:on-logout` that throws has
   been since 0.10.0: logged, and this session ended all the same, where it used to answer
   a 500 for a revocation that had already happened. A `revoke!` that fails is not the
