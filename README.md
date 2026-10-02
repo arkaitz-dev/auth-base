@@ -174,7 +174,7 @@ which belongs to your stack, so your login view emits the field.
 ## Installed in web-base: the standard pages
 
 ```clojure
-{:deps {dev.arkaitz/web-base  {:mvn/version "0.12.0"}
+{:deps {dev.arkaitz/web-base  {:mvn/version "0.14.0"}
         dev.arkaitz/auth-base {:mvn/version "0.10.0"}}}
 ```
 
