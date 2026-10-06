@@ -56,7 +56,9 @@
              :note                ""
              :sign-in             "Sign in"
              :sign-out            "Sign out"
-             :sign-out-everywhere "Sign out everywhere"}}
+             :sign-out-everywhere "Sign out everywhere"
+             :mail-subject        "Your sign-in link"
+             :mail-body           "Open this link to sign in. It works once, for a few minutes. If you did not ask for it, nobody can use it without this mailbox: ignore this message."}}
    :es {:ab {:title               "Entrar"
              :label               "Dirección de correo"
              :submit              "Enviarme un enlace"
@@ -71,7 +73,9 @@
              :note                ""
              :sign-in             "Entrar"
              :sign-out            "Salir"
-             :sign-out-everywhere "Salir en todas partes"}}})
+             :sign-out-everywhere "Salir en todas partes"
+             :mail-subject        "Tu enlace para entrar"
+             :mail-body           "Abre este enlace para entrar. Sirve una sola vez y durante unos minutos. Si no lo has pedido, nadie puede usarlo sin este buzón: ignora este mensaje."}}})
 
 (defn- t
   "The string `k` names, in the request's language, or else in English: outside
@@ -81,6 +85,20 @@
   [request k]
   (or (some-> (:wb/tr request) (apply [(keyword "ab" (name k))]))
       (get-in dict [:en :ab k])))
+
+(defn sign-in-mail
+  "The standard sign-in email for `link`, in `request`'s language — English without one,
+  as when `issue!` runs outside a request: `{:subject s :text t}`, for a host's mailer.
+
+      :deliver-with-request! (fn [identifier link request]
+                               (mail/send! mailer (assoc (auth-web/sign-in-mail request link) :to identifier)))
+
+  Its words are `:ab/mail-subject` and `:ab/mail-body`, overridden per locale like every
+  other string. The link is set on a line of its own and never passed through the
+  translator, whose formatting would read a token's `_` or `%` as its own."
+  [request link]
+  {:subject (t request :mail-subject)
+   :text    (str (t request :mail-body) "\n\n" link "\n")})
 
 (defn- state-name [{:keys [sent? spent? limited? confirm?]}]
   (cond sent? "sent" spent? "spent" limited? "limited" confirm? "confirm" :else "form"))

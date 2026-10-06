@@ -42,7 +42,10 @@
   (let [pages (concat (map #(web/view anonymous %) (abt/view-states))
                       [(web/identity signed-in {:revoke-path "/everywhere"})
                        (web/identity anonymous)])
-        words (mapcat text-of pages)]
+        mail  (web/sign-in-mail anonymous "https://x.test/link")
+        words (concat (mapcat text-of pages)
+                      (str/split (:subject mail) #"\s+")
+                      (remove #{"https://x.test/link"} (str/split (:text mail) #"\s+")))]
     (is (< 20 (count words)) (str "witness: the pages have words to check: " (count words)))
     (is (= [] (vec (remove sentinel? words)))
         "no word is spelt in the markup: each one is a key a host can translate or replace")
@@ -124,6 +127,37 @@
                         :stylesheets ["/host.css"]
                         :routes      [["/" {:get (fn [_] {:status 200 :body [:p "home"]})}]]
                         :plugins     [(web/plugin ceremony (merge {:layouts [layout]} opts))]})})))
+
+(deftest the-sign-in-email-speaks-the-requests-language-and-carries-the-link-verbatim
+  ;; A link whose token holds what Tempura would read as formatting: `_`, `%1`, `**`.
+  (let [link "https://x.test/login/redeem/a_b%1**c__d"]
+    ;; A host composing the email as a real one does, through :deliver-with-request!.
+    (let [box      (atom [])
+          ceremony (auth/ceremony {:store (auth/in-memory-store {:subjects {"ada@x.test" {:id 1}}})
+                                   :deliver-with-request! (fn [id link request]
+                                                            (swap! box conj (assoc (web/sign-in-mail request link) :to id)))
+                                   :link {:base-url "https://x.test" :redeem-path "/login/redeem"}})
+          app      (wb/handler {:session {:key session-key}
+                                :i18n    {:default-locale :en :locales [:en :es]}
+                                :routes  [["/" {:get (fn [_] {:status 200 :body [:p "home"]})}]]
+                                :plugins [(web/plugin ceremony {})]})]
+      (doseq [[lang subject] [["es" "Tu enlace para entrar"] ["en" "Your sign-in link"]]]
+        (let [b (wbt/visit (wbt/browser app) :get "/login" nil {:headers {"accept-language" lang}})
+              _ (wbt/visit b :post "/login" {"identifier" "ada@x.test"} {:headers {"accept-language" lang}})
+              m (last @box)]
+          (is (= "ada@x.test" (:to m)) (str lang ": witness: the ceremony delivered"))
+          (is (= subject (:subject m)) (str lang ": the subject in the request's language"))
+          (is (str/starts-with? (:text m) (get-in web/dict [(keyword lang) :ab :mail-body]))
+              (str lang ": the body too"))
+          (is (re-find #"\n\nhttps://x\.test/login/redeem/[A-Za-z0-9_-]{43}\n$" (:text m))
+              (str lang ": and the link the ceremony minted, alone on its last line: " (pr-str (:text m)))))))
+    (is (= {:subject "Your sign-in link"
+            :text    (str (get-in web/dict [:en :ab :mail-body]) "\n\n" link "\n")}
+           (web/sign-in-mail nil link))
+        "outside a request it is English, and the link is exactly as given")
+    (is (= (str (get-in web/dict [:es :ab :mail-body]) "\n\n" link "\n")
+           (:text (web/sign-in-mail {:wb/tr (fn [id] (get-in web/dict [:es :ab (keyword (name id))]))} link)))
+        "through a translator, the words are translated and the link is not")))
 
 (defn- hrefs [html] (mapv second (re-seq #"<link[^>]*href=\"([^\"]+)\"" html)))
 

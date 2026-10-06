@@ -484,7 +484,10 @@ unchanged.
 - mail transport — `dev.arkaitz.auth-base.console/deliver!` (2026-09-26) prints the link
   for development and is not an exception to this: it transports nothing, four hosts
   had written the same four `println`s, and a namespace of its own keeps every host that
-  still prints links findable before it reaches production;
+  still prints links findable before it reaches production. Nor is `auth-web/sign-in-mail`
+  (2026-10-06): it writes the standard email's words, in the request's language, as the
+  standard pages write theirs, and sends nothing — a host hands them to its mailer
+  (sendmail-base, which names no sibling either);
 - anything that fails §4.
 
 ## 15 · Settled, and open

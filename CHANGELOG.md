@@ -6,6 +6,13 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.12.0 — unreleased
+
+- `auth-web/sign-in-mail`: the standard sign-in email, `{:subject :text}` in the
+  request's language, from two new dictionary keys, `:ab/mail-subject` and
+  `:ab/mail-body`, in English and Spanish. A host hands it to its mailer from
+  `:deliver-with-request!`; this library still sends nothing.
+
 ## 0.11.0 — 2026-10-02
 
 - On web-base 0.14.0, whose jar registers its own assets for a native image.

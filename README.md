@@ -246,6 +246,17 @@ reason.
 the stylesheet and the migrations — files and their directory, which db-base lists —
 and GraalVM reads it from the classpath on its own. It is data, never flags.
 
+**The sign-in email** is standard too (since 0.12.0): `(auth-web/sign-in-mail request
+link)` answers `{:subject … :text …}` in the request's language — English outside one —
+with the link alone on its last line, never passed through the translator. Its words are
+`:ab/mail-subject` and `:ab/mail-body`, overridden like any other. A host hands it to its
+mailer:
+
+```clojure
+:deliver-with-request! (fn [identifier link request]
+                         (mail/send! mailer (assoc (auth-web/sign-in-mail request link) :to identifier)))
+```
+
 **Signing out**: `:on-logout (fn [request])` is handed the logout's request, whose
 `:session/key` names the session being deleted — where a host forgets its record of the
 device. `:revoke-path` is a POST that signs the subject out everywhere: `revoke!`, then
