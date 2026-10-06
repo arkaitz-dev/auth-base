@@ -6,8 +6,9 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.12.0 — unreleased
+## 0.12.0 — 2026-10-06
 
+- Declares web-base 0.15.0, whose `:session :renew` slides a signed-in session.
 - `auth-jdbc/rate-limiter`: the sign-in rate limit shared by every instance of a host,
   over the JDBC store's database, for `:rate-limit`. Its table and index come with
   migrations 005 and 006, which `:libraries` runs at the next boot;

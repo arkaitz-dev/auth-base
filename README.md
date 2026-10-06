@@ -31,7 +31,7 @@ test belongs in the host.
 
 ```clojure
 ;; deps.edn — from Clojars
-dev.arkaitz/auth-base {:mvn/version "0.11.0"}
+dev.arkaitz/auth-base {:mvn/version "0.12.0"}
 
 ;; or straight from git, to track a commit
 dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
@@ -174,8 +174,8 @@ which belongs to your stack, so your login view emits the field.
 ## Installed in web-base: the standard pages
 
 ```clojure
-{:deps {dev.arkaitz/web-base  {:mvn/version "0.14.0"}
-        dev.arkaitz/auth-base {:mvn/version "0.11.0"}}}
+{:deps {dev.arkaitz/web-base  {:mvn/version "0.15.0"}
+        dev.arkaitz/auth-base {:mvn/version "0.12.0"}}}
 ```
 
 ```clojure
@@ -668,7 +668,7 @@ refused by name.
 ```
 clojure -M:test                       # the whole suite, both proofs included
 clojure -M:test -n <namespace>        # one namespace (several -n allowed)
-clojure -T:build jar                  # target/auth-base-0.11.0.jar
+clojure -T:build jar                  # target/auth-base-0.12.0.jar
 clojure -T:build install              # into ~/.m2
 CLOJARS_USERNAME=… CLOJARS_PASSWORD=<deploy token> clojure -T:build deploy
 ```
