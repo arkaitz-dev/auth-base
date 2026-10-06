@@ -40,9 +40,16 @@ clojure -M:test -n <namespace>         # one namespace (several -n allowed)
 clojure -T:build jar                   # library jar → target/auth-base-0.11.0.jar (no demos inside)
 clojure -T:build install               # jar + pom into ~/.m2, for a consumer on this machine
 clojure -T:build deploy                # to Clojars with CLOJARS_USERNAME/CLOJARS_PASSWORD; run for every release from 0.1.0
+clojure -T:build verify-release        # after deploy: the jar on Clojars, byte for byte against the tag
 clojure -M:harness [port]              # the ring-only harness, default 3001
 AUTH_DEMO_SESSION_KEY=$(openssl rand -base64 16) clojure -M:demo [port]   # the web-base demo, default 3000
 ```
+
+**Releasing across the set**, in this order, since each consumer names the one before it:
+web-base, then auth-base (its `deps.edn` declares web-base), then db-base, then the
+consumers — db-base's hosts, auth-base's demo, and the template, whose CHANGELOG gets an
+entry. For each library: commit and push, `clojure -T:build deploy` (the user's),
+`clojure -T:build verify-release`, then bump its consumers the same day.
 
 ⚠ `clojure -M:harness -e "…"` does **not** replace the alias's `:main-opts`, it appends
 to them: the server starts and the expression never runs. For a one-off script use
