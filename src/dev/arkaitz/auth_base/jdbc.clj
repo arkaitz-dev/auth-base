@@ -12,7 +12,8 @@
   **It opens nothing.** It takes the `javax.sql.DataSource` the host already has — from
   db-base, `(:datasource db)` — and never a connection map, a URL or a handle of
   another library's. So the library is still not a database: it is three tables'
-  worth of statements over a pool somebody else opened.
+  worth of statements over a pool somebody else opened — four, with the shared rate
+  limit's (since 0.12.0), which a host that keeps the in-process limit never reads.
 
   **It runs no migration either, and ships them.** Its tables are migration files under
   the classpath prefix `dev/arkaitz/auth_base/migrations`, which db-base runs under a
@@ -32,19 +33,23 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs])
   (:import [java.nio.charset StandardCharsets]
+           [java.security MessageDigest]
            [java.sql SQLException]
            [java.util UUID]
            [javax.sql DataSource]))
 
 (def ddl
-  "The three tables and the index a revocation reads them by, as one statement each —
+  "The three tables, the index a revocation reads them by, and the shared rate limit's
+  table with the index its reclaim reads it by, as one statement each —
   the statements of the migration files this library ships, in their order, which a test
   holds them to. Names are fixed: the host's tables refer to `account(subject)` by
   foreign key."
   ["CREATE TABLE account (subject VARCHAR(36) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL UNIQUE, created_at BIGINT NOT NULL)"
    "CREATE TABLE account_generation (subject VARCHAR(36) NOT NULL PRIMARY KEY, generation BIGINT NOT NULL)"
    "CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL)"
-   "CREATE INDEX login_challenge_identifier ON login_challenge (identifier)"])
+   "CREATE INDEX login_challenge_identifier ON login_challenge (identifier)"
+   "CREATE TABLE login_attempt (source VARCHAR(64) NOT NULL PRIMARY KEY, attempts BIGINT NOT NULL, expires_at BIGINT NOT NULL)"
+   "CREATE INDEX login_attempt_expires_at ON login_attempt (expires_at)"])
 
 (def ^:private as-maps {:builder-fn rs/as-unqualified-lower-maps})
 
@@ -262,3 +267,101 @@
       (throw (ex-info "auth-base jdbc: reclaim-expired! takes now as an integer of epoch milliseconds"
                       {:now now})))
     (changed (one ds "DELETE FROM login_challenge WHERE expires_at <= ?" now))))
+
+;; --- a rate limit every instance shares ---------------------------------------------
+
+(def ^:private attempt-retries
+  "A bound on compare-and-set retries, so a window contended without end is an error
+  and never a thread spinning for ever."
+  100)
+
+(defn- bucket
+  "What the table keys `key` by: its SHA-256, hex — one width whatever the key, an
+  address or an IPv6 /64. The address is not stored in the clear, but it is not hidden
+  from a reader of the table either: IPv4 has 2^32 addresses, and hashing them all takes
+  minutes. Treat the table as the access log it amounts to."
+  [key]
+  (let [digest (.digest (MessageDigest/getInstance "SHA-256") (.getBytes (str key) StandardCharsets/UTF_8))]
+    (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest))))
+
+(defn rate-limiter
+  "A rate limit over `ds` that every instance of a host shares, for the handlers'
+  `:rate-limit`: `(fn [key] {:allowed? bool :retry-after-ms n-or-nil})`, a fixed window of
+  `:window-ms` letting `:limit` attempts through per key, as `rate-limit/fixed-window`
+  does in one process (SPEC §11). `:clock` defaults to the system's.
+
+  Its table, `login_attempt`, comes with the migrations (005) and is checked when this is
+  called, so a database without it fails the boot, not a sign-in. The count is moved by
+  compare-and-set, so two instances racing for the last attempt let one through, never
+  both; a refused attempt writes nothing, so a flood costs one read per request. A window
+  contended past a hundred compare-and-sets throws — out of the handlers, to the host's
+  own error handling, typically a 500 — and never lets the attempt through. Each source costs a row until `reclaim-expired-attempts!` gives
+  the closed windows back — call it on a schedule, as the template's sweeper does, or the
+  table grows with every source that ever tried. The source is stored as its SHA-256:
+  not in the clear, and not anonymous (`bucket`). `:clock` is the limiter's own: the
+  ceremony's is not handed to a function the way it is to a `:rate-limit` map, so a test
+  that moves time passes its clock here too."
+  [ds {:keys [limit window-ms clock]}]
+  (let [ds (datasource! ds)]
+    (when-not (pos-int? limit)
+      (throw (ex-info "auth-base jdbc: the rate limit's :limit must be a positive integer" {:config-key [:rate-limit :limit]})))
+    (when-not (pos-int? window-ms)
+      (throw (ex-info "auth-base jdbc: the rate limit's :window-ms must be a positive number of milliseconds"
+                      {:config-key [:rate-limit :window-ms]})))
+    (when-not (or (nil? clock) (ifn? clock))
+      (throw (ex-info "auth-base jdbc: the rate limit's :clock must be a function of no arguments" {:config-key [:rate-limit :clock]})))
+    (try (jdbc/execute! ds ["SELECT source, attempts, expires_at FROM login_attempt WHERE 1 = 0"])
+         (catch SQLException e
+           (throw (ex-info "auth-base jdbc: the rate limit could not read table login_attempt — migration 005 has not run"
+                           {:table "login_attempt" :config-key [:datasource]} e))))
+    (let [clock (or clock #(System/currentTimeMillis))]
+      (fn decide [key]
+        (let [source (bucket key)]
+          (loop [attempt 1]
+            (when (< attempt-retries attempt)
+              (throw (ex-info (str "auth-base jdbc: a rate-limit window changed under " attempt-retries " attempts to count")
+                              {:attempts attempt-retries})))
+            (let [now     (long (clock))
+                  row     (one ds "SELECT attempts, expires_at FROM login_attempt WHERE source = ?" source)
+                  opened  (+ now window-ms)
+                  counted (cond
+                            (nil? row)
+                            (try (one ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, 1, ?)" source opened)
+                                 :allowed
+                                 ;; Another instance opened the window first, and its row is
+                                 ;; there to read again; with no row the engine refused for
+                                 ;; another reason, which is rethrown, not retried.
+                                 (catch SQLException e
+                                   (when-not (one ds "SELECT attempts FROM login_attempt WHERE source = ?" source)
+                                     (throw e))
+                                   nil))
+
+                            (<= (:expires_at row) now)
+                            (when (= 1 (changed (one ds "UPDATE login_attempt SET attempts = 1, expires_at = ?
+                                                         WHERE source = ? AND expires_at = ?"
+                                                     opened source (:expires_at row))))
+                              :allowed)
+
+                            (< (:attempts row) limit)
+                            (when (= 1 (changed (one ds "UPDATE login_attempt SET attempts = ?
+                                                         WHERE source = ? AND expires_at = ? AND attempts = ?"
+                                                     (inc (:attempts row)) source (:expires_at row) (:attempts row))))
+                              :allowed)
+
+                            :else
+                            {:allowed? false :retry-after-ms (- (:expires_at row) now)})]
+              (cond (= :allowed counted) {:allowed? true :retry-after-ms nil}
+                    (map? counted)       counted
+                    :else                (recur (inc attempt))))))))))
+
+(defn reclaim-expired-attempts!
+  "Deletes rate-limit windows that closed at or before `now`, and returns how many: a
+  closed window counts nothing, so this is about disk. The operator's to call, beside
+  `reclaim-expired!`. A `now` that is not an integer is refused, for the reason that one
+  gives."
+  [ds now]
+  (let [ds (datasource! ds)]
+    (when-not (integer? now)
+      (throw (ex-info "auth-base jdbc: reclaim-expired-attempts! takes now as an integer of epoch milliseconds"
+                      {:now now})))
+    (changed (one ds "DELETE FROM login_attempt WHERE expires_at <= ?" now))))

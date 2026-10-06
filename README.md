@@ -599,9 +599,23 @@ abuse and does not end it. Behind a proxy
 run.
 
 **The window is kept per process.** Behind N instances a source gets N times the limit,
-and `:max-keys` counts per instance; a restart forgets every window. To share the limit,
-give `:rate-limit` a function of your own over a store the instances share — it may
-answer a decision built with `auth/fixed-window-decider`'s shape, below.
+and `:max-keys` counts per instance; a restart forgets every window. To share it, the JDBC
+store has one over its database (since 0.12.0):
+
+```clojure
+:rate-limit (auth-jdbc/rate-limiter ds {:limit 5 :window-ms (* 15 60 1000)})
+```
+
+The same fixed window, counted in `login_attempt` (migration 005), so every instance sees
+one count and a restart forgets nothing. Two instances racing for the last attempt let
+one through: the count moves by compare-and-set. A refused attempt writes nothing, so a
+flood costs one read per request. The table holds each source's SHA-256: not the address
+in the clear, but not anonymous either — IPv4 has 2^32 addresses, and a reader of the table
+can hash them all — so treat it as the access log it amounts to. Each source costs a row
+until `(auth-jdbc/reclaim-expired-attempts! ds now)` gives the closed windows back: call it
+on a schedule beside `reclaim-expired!`, or the table grows with every source that ever
+tried. The limiter takes its own `:clock`; a host's tests that move time pass theirs. A limiter of your own may still answer a decision built with
+`auth/fixed-window-decider`'s shape, below.
 
 A refused request is a `429` with `Cache-Control: no-store` whose body is your `:view`
 in its `{:limited? true}` state — the page the person was on, and a reason — and not an

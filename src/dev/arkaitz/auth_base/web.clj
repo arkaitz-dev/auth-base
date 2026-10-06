@@ -200,7 +200,8 @@
   routes stayed where this one mounts them: the gate would send people to a page nobody
   serves. Hand the same map to `identity` and `sign-out`, so their buttons post where the
   routes are; with the default paths, none. The rate limit's table is this process's: N
-  instances allow N times `:limit`.
+  instances allow N times `:limit`, unless `:rate-limit` is `auth-jdbc/rate-limiter`,
+  which every instance shares.
 
   The routes also carry `wrap-revoked`, so a revoked session's cookie is thrown away at
   the login page; the host's own routes take it as route middleware if it wants the

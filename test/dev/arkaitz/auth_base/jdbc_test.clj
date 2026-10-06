@@ -13,6 +13,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
+            [dev.arkaitz.auth-base.handlers :as handlers]
             [dev.arkaitz.auth-base.jdbc :as aj]
             [dev.arkaitz.auth-base.session :as session]
             [dev.arkaitz.auth-base.store :as store]
@@ -522,13 +523,15 @@
 (deftest every-public-function-refuses-what-is-not-a-DataSource-by-name-and-touches-nothing
   (on-engines
    (fn [engine ds]
-     (let [counts #(mapv (partial count-of ds) ["account" "account_generation" "login_challenge"])
+     (let [counts #(mapv (partial count-of ds) ["account" "account_generation" "login_challenge" "login_attempt"])
            before (counts)
            calls  [["store" aj/store []] ["check!" aj/check! []] ["subject-for" aj/subject-for [ada]]
                    ["identifier-for" aj/identifier-for ["s"]] ["register!" aj/register! [ada]]
                    ["generation" aj/generation ["s"]] ["bump-generation!" aj/bump-generation! ["s"]]
                    ["reclaim-expired!" aj/reclaim-expired! [0]]
-                   ["latest-challenge-token" aj/latest-challenge-token [ada]]]]
+                   ["latest-challenge-token" aj/latest-challenge-token [ada]]
+                   ["rate-limiter" aj/rate-limiter [{:limit 2 :window-ms 1000}]]
+                   ["reclaim-expired-attempts!" aj/reclaim-expired-attempts! [0]]]]
        (doseq [[label f args] calls
                [bad what type] [[{:datasource ds} "a map" "clojure.lang.PersistentArrayMap"]
                                 ["jdbc:h2:mem:x" "java.lang.String" "java.lang.String"]]]
@@ -574,7 +577,8 @@
 ;; --- the migrations it ships ---------------------------------------------------------
 
 (def ^:private migration-files
-  ["001-accounts.up.sql" "002-generations.up.sql" "003-challenges.up.sql" "004-challenge-identifier.up.sql"])
+  ["001-accounts.up.sql" "002-generations.up.sql" "003-challenges.up.sql" "004-challenge-identifier.up.sql"
+   "005-login-attempts.up.sql" "006-login-attempt-expiry.up.sql"])
 
 (defn- statement-of
   "The one statement a migration file holds: its lines less the `--` comments, joined."
@@ -591,7 +595,7 @@
   (let [dir   (io/file (io/resource "dev/arkaitz/auth_base/migrations"))
         found (sort (map #(.getName ^java.io.File %) (.listFiles dir)))]
     (is (= migration-files found)
-        "the prefix holds exactly the four, numbered in the order they must run — a new one is a new number")
+        "the prefix holds exactly the six, numbered in the order they must run — a new one is a new number")
     (is (= aj/ddl (mapv statement-of migration-files))
         "each file holds the ddl statement of its position, and nothing else, so the two cannot drift"))
   (on-engines (mapv statement-of migration-files)
@@ -602,3 +606,229 @@
                                                   "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.INDEXES WHERE INDEX_NAME = 'LOGIN_CHALLENGE_IDENTIFIER'"
                                                   "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'login_challenge_identifier'")))))
                     (str engine ": and the index a revocation reads by, which check! does not look for")))))
+
+;; --- 6 · the rate limit every instance shares ----------------------------------------------
+
+;; Known answers, computed with `shasum -a 256` and not with the code under test: a
+;; recomputation here would share any encoding defect of its own.
+(def ^:private k "203.0.113.9")
+(def ^:private k-hex "d861b7e91033ebc1c1e8e7af3929010158b3241b54ca87ef73e79c32f26400ec")
+(def ^:private a-hex "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb")
+
+(def ^:private allowed {:allowed? true :retry-after-ms nil})
+
+(defn- attempts [ds] (vec (raw ds "SELECT source, attempts, expires_at FROM login_attempt ORDER BY source")))
+
+(deftest the-shared-limit-is-a-fixed-window--and-a-refusal-writes-nothing
+  (on-engines
+   (fn [engine ds]
+     (let [clock  (abt/clock 1000)
+           decide (aj/rate-limiter ds {:limit 2 :window-ms 1000 :clock clock})]
+       (is (= allowed (decide k)) (str engine ": the first attempt opens the window"))
+       (is (= [[k-hex 1 2000]] (attempts ds)) (str engine ": one row, the key's SHA-256, never the key"))
+       (is (= allowed (decide k)) (str engine ": the second is within the limit"))
+       (is (= [[k-hex 2 2000]] (attempts ds)))
+       (abt/advance! clock 300)
+       (is (= {:allowed? false :retry-after-ms 700} (decide k)) (str engine ": the third is refused, told when the window reopens"))
+       (is (= [[k-hex 2 2000]] (attempts ds)) (str engine ": and the refusal wrote nothing"))
+       (abt/advance! clock 300)
+       (is (= {:allowed? false :retry-after-ms 400} (decide k)) (str engine ": measured from the window's start, which a refusal never moves"))
+       (is (= [[k-hex 2 2000]] (attempts ds)))
+       (is (= allowed (decide "a")) (str engine ": another key has its own count"))
+       (abt/advance! clock 400)
+       (is (= allowed (decide k)) (str engine ": once the window has closed, a new one opens"))
+       (is (= [[a-hex 1 2600] [k-hex 1 3000]] (attempts ds)) (str engine ": reset to one, with its own expiry"))
+       (is (not (str/includes? (pr-str (raw ds "SELECT * FROM login_attempt")) k)) (str engine ": no address at rest"))))))
+
+(deftest two-instances-over-one-database-share-the-count
+  (on-engines
+   (fn [engine ds]
+     (let [clock (abt/clock 1000)
+           l1    (aj/rate-limiter ds {:limit 2 :window-ms 1000 :clock clock})
+           l2    (aj/rate-limiter ds {:limit 2 :window-ms 1000 :clock clock})]
+       (is (= [allowed allowed] [(l1 k) (l2 k)]) (str engine ": one attempt through each"))
+       (is (= [{:allowed? false :retry-after-ms 1000} {:allowed? false :retry-after-ms 1000}] [(l1 k) (l2 k)])
+           (str engine ": and both refuse the third, which neither saw counted itself"))
+       (is (= 1 (count-of ds "login_attempt")))))))
+
+(defn- limiter-over [ds limit]
+  (aj/rate-limiter ds {:limit limit :window-ms 1000 :clock (constantly 1000)}))
+
+(defn- naive-count
+  "The limit without compare-and-set: read, then add one — the control that must let two
+  through where one may pass."
+  [ds limit]
+  (let [row (jdbc/execute-one! ds ["SELECT attempts FROM login_attempt WHERE source = ?" k-hex] {:builder-fn rs/as-unqualified-lower-maps})]
+    (when (< (:attempts row) limit)
+      (jdbc/execute-one! ds ["UPDATE login_attempt SET attempts = attempts + 1 WHERE source = ?" k-hex])
+      true)))
+
+(deftest the-last-attempt-raced-by-two-instances-lets-one-through--never-both
+  (on-engines
+   (fn [engine ds]
+     (testing "the window at one of two: both read 1, the slow one's compare-and-set loses"
+       (plant! ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, ?, ?)" k-hex 1 2000)
+       (let [{:keys [parked-in-time? exit slow fast]} (race ds (starts #"(?i)^\s*update") #((limiter-over % 2) k) #((limiter-over % 2) k))]
+         (is (and parked-in-time? (= :released exit)) (str engine ": parked after its read, released after the other's write"))
+         (is (= [[:ok allowed] [:ok {:allowed? false :retry-after-ms 1000}]] [fast slow])
+             (str engine ": one through, the other refused on reading again"))
+         (is (= [[k-hex 2 2000]] (attempts ds)) (str engine ": and two attempts counted, the limit"))))
+     (testing "the control: without compare-and-set the same harness lets both through"
+       (jdbc/execute! ds ["DELETE FROM login_attempt"])
+       (plant! ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, ?, ?)" k-hex 1 2000)
+       (let [{:keys [exit slow fast]} (race ds (starts #"(?i)^\s*update") #(naive-count % 2) #(naive-count % 2))]
+         (is (= :released exit))
+         (is (= [[:ok true] [:ok true]] [fast slow]) (str engine ": two through"))
+         (is (= [[k-hex 3 2000]] (attempts ds)) (str engine ": three attempts, past the limit — the harness can tell")))))))
+
+(deftest the-first-window-raced-by-two-instances-counts-both
+  (on-engines
+   (fn [engine ds]
+     (testing "no row: both find none, the slow one's insert is refused and it counts instead"
+       (let [{:keys [parked-in-time? exit slow fast]} (race ds (starts #"(?i)^\s*insert into login_attempt") #((limiter-over % 2) k) #((limiter-over % 2) k))]
+         (is (and parked-in-time? (= :released exit)))
+         (is (= [[:ok allowed] [:ok allowed]] [fast slow]))
+         (is (= [[k-hex 2 2000]] (attempts ds)) (str engine ": two counted, not one"))))
+     (testing "and with a limit of one, the slow one is refused"
+       (jdbc/execute! ds ["DELETE FROM login_attempt"])
+       (let [{:keys [exit slow fast]} (race ds (starts #"(?i)^\s*insert into login_attempt") #((limiter-over % 1) k) #((limiter-over % 1) k))]
+         (is (= :released exit))
+         (is (= [[:ok allowed] [:ok {:allowed? false :retry-after-ms 1000}]] [fast slow]))
+         (is (= [[k-hex 1 2000]] (attempts ds)) (str engine ": one counted: the refused one wrote nothing")))))))
+
+(deftest a-closed-window-raced-by-two-instances-is-reopened-once
+  ;; Both read the window closed at 1500 with the clock at 2000; the fast one reopens it,
+  ;; the slow one's reset must lose and read again, where the window is open.
+  (on-engines
+   (fn [engine ds]
+     (doseq [[limit slow-answer row] [[2 allowed [[k-hex 2 3000]]]
+                                      [1 {:allowed? false :retry-after-ms 1000} [[k-hex 1 3000]]]]]
+       (jdbc/execute! ds ["DELETE FROM login_attempt"])
+       (plant! ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, ?, ?)" k-hex 2 1500)
+       (let [over (fn [ds] ((aj/rate-limiter ds {:limit limit :window-ms 1000 :clock (constantly 2000)}) k))
+             {:keys [parked-in-time? exit slow fast]} (race ds (starts #"(?i)^\s*update") over over)]
+         (is (and parked-in-time? (= :released exit)) (str engine ", limit " limit ": parked after its read, released after the reset"))
+         (is (= [[:ok allowed] [:ok slow-answer]] [fast slow]) (str engine ", limit " limit ": the window reopened once"))
+         (is (= row (attempts ds)) (str engine ", limit " limit ": and counted by both, or by one where one is the limit"))))
+     (testing "the control: a reset that does not compare the expiry reopens it twice"
+       (jdbc/execute! ds ["DELETE FROM login_attempt"])
+       (plant! ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, ?, ?)" k-hex 2 1500)
+       (let [naive (fn [ds]
+                     (jdbc/execute-one! ds ["SELECT attempts FROM login_attempt WHERE source = ?" k-hex])
+                     (jdbc/execute-one! ds ["UPDATE login_attempt SET attempts = 1, expires_at = 3000 WHERE source = ?" k-hex])
+                     true)
+             {:keys [exit slow fast]} (race ds (starts #"(?i)^\s*update") naive naive)]
+         (is (= :released exit))
+         (is (= [[:ok true] [:ok true]] [fast slow]))
+         (is (= [[k-hex 1 3000]] (attempts ds)) (str engine ": two through, one counted — the harness can tell")))))))
+
+(deftest a-refusal-costs-one-read-and-no-write
+  (on-engines
+   (fn [engine ds]
+     (plant! ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, ?, ?)" k-hex 2 2000)
+     (let [statements (atom [])
+           counting   (datasource-over ds (fn [^Method m args]
+                                            (when (#{"prepareStatement" "prepareCall" "createStatement"} (.getName m))
+                                              (swap! statements conj (str/triml (str (first args)))))
+                                            args))
+           decide     (limiter-over counting 2)
+           _          (reset! statements [])]
+       (is (= {:allowed? false :retry-after-ms 1000} (decide k)) (str engine ": refused"))
+       (is (= 1 (count @statements)) (str engine ": with one statement: " @statements))
+       (is (str/starts-with? (str/upper-case (first @statements)) "SELECT") (str engine ": a read"))))))
+
+(deftest the-shared-limit-answers-the-sign-in-form-with-a-429-and-its-retry-after
+  ;; The README's own wiring, through the handlers: the second sign-in from one source
+  ;; within the window is refused, saying when to come back — 29 500 ms, which only a
+  ;; rounding up makes the 30 a client may wait and be let in.
+  (on-engines
+   (fn [engine ds]
+     (let [limit-clock (abt/clock 1000)
+           c       (ceremony/ceremony {:store (aj/store ds) :deliver! (fn [_ _]) :clock (abt/clock 1000)
+                                       :link {:base-url "https://x.test" :redeem-path "/entrar"}})
+           {:keys [issue]} (handlers/handlers c {:view (fn [_ state] (pr-str state)) :login-path "/login"
+                                                 :rate-limit (aj/rate-limiter ds {:limit 1 :window-ms 30000 :clock limit-clock})})
+           post    #(issue {:request-method :post :uri "/login" :form-params {"identifier" ada} :remote-addr "203.0.113.9"
+                            :headers {}})
+           first-r (post)
+           _        (abt/advance! limit-clock 500)
+           second-r (post)]
+       (is (= 303 (:status first-r)) (str engine ": the first is let through"))
+       (is (= [429 "30"] [(:status second-r) (get-in second-r [:headers "Retry-After"])])
+           (str engine ": the second is a 429, told to come back when the window reopens"))
+       (is (= [[k-hex 1 31000]] (attempts ds)) (str engine ": counted in the shared table, under the source's hash"))))))
+
+(deftest a-window-contended-without-end-is-an-error-not-a-spin
+  (on-engines
+   (fn [engine ds]
+     (plant! ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, ?, ?)" k-hex 1 2000)
+     (let [updates (atom 0)
+           stuck   (datasource-over ds (fn [^Method m args]
+                                         (if (and (= "prepareStatement" (.getName m))
+                                                  (str/starts-with? (str/triml (str (first args))) "UPDATE"))
+                                           (do (swap! updates inc)
+                                               (into-array Object (cons (str (first args) " AND 1 = 0") (rest args))))
+                                           args)))
+           result  (deref (future (try ((limiter-over stuck 2) k) (catch clojure.lang.ExceptionInfo e e))) 20000 ::hang)]
+       (is (= 100 @updates) (str engine ": after exactly 100 compare-and-sets"))
+       (is (= ["auth-base jdbc: a rate-limit window changed under 100 attempts to count" {:attempts 100}]
+              [(ex-message result) (ex-data result)]))))))
+
+(deftest an-insert-the-engine-refuses-for-another-reason-is-rethrown-not-retried
+  (on-engines
+   (fn [engine ds]
+     (let [inserts (atom 0)
+           refused (datasource-over ds (fn [^Method m args]
+                                         (if (and (= "prepareStatement" (.getName m))
+                                                  (str/starts-with? (str/triml (str (first args))) "INSERT"))
+                                           (do (swap! inserts inc)
+                                               (into-array Object (cons (str/replace (str (first args)) "login_attempt" "no_such_table")
+                                                                        (rest args))))
+                                           args)))
+           e       (deref (future (try ((limiter-over refused 2) k) nil (catch Exception e e))) 20000 ::hang)]
+       (is (and (instance? SQLException e) (not (instance? clojure.lang.ExceptionInfo e)))
+           (str engine ": the engine's refusal, not the retry bound's: " (pr-str e)))
+       (is (= 1 @inserts) (str engine ": tried once"))
+       (is (= 0 (count-of ds "login_attempt")) (str engine ": witness: the proxy let no INSERT through"))))))
+
+(deftest a-database-without-the-table-or-a-malformed-option-is-refused-when-the-limit-is-built
+  (on-engines (subvec aj/ddl 0 4)
+   (fn [engine ds]
+     (let [e (try (aj/rate-limiter ds {:limit 2 :window-ms 1000}) nil (catch clojure.lang.ExceptionInfo e e))]
+       (is (= ["auth-base jdbc: the rate limit could not read table login_attempt — migration 005 has not run"
+               {:table "login_attempt" :config-key [:datasource]}]
+              [(ex-message e) (ex-data e)])
+           (str engine ": refused when built, naming the table and the migration"))
+       (is (instance? SQLException (ex-cause e)) (str engine ": with the engine's own refusal as its cause")))
+     (is (identical? ds (aj/check! ds)) (str engine ": and check! does not need the new table, as before 005"))))
+  (on-engines
+   (fn [engine ds]
+     (doseq [[opts key] [[{:limit 0 :window-ms 1000} [:rate-limit :limit]] [{:limit nil :window-ms 1000} [:rate-limit :limit]]
+                         [{:limit 2.5 :window-ms 1000} [:rate-limit :limit]] [{:limit "2" :window-ms 1000} [:rate-limit :limit]]
+                         [{:limit 2 :window-ms 0} [:rate-limit :window-ms]] [{:limit 2 :window-ms -1} [:rate-limit :window-ms]]
+                         [{:limit 2} [:rate-limit :window-ms]] [{:limit 2 :window-ms 1000 :clock "now"} [:rate-limit :clock]]]]
+       (is (= {:config-key key} (ex-data (try (aj/rate-limiter ds opts) nil (catch clojure.lang.ExceptionInfo e e))))
+           (str engine ": " (pr-str opts) " refused naming " key)))
+     (is (fn? (aj/rate-limiter ds {:limit 2 :window-ms 1000})) (str engine ": control: without :clock it is built")))))
+
+(deftest reclaim-expired-attempts!-removes-closed-windows-only-and-counts-them
+  (on-engines
+   (fn [engine ds]
+     (doseq [[s n e] [["s1" 1 100] ["s2" 2 200] ["s3" 1 300]]]
+       (plant! ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, ?, ?)" s n e))
+     (plant! ds "INSERT INTO login_challenge (token, identifier, expires_at) VALUES (?, ?, ?)" "t" ada 100)
+     (is (= 2 (aj/reclaim-expired-attempts! ds 200)) (str engine ": the two windows closed at or before 200"))
+     (is (= [["s3"]] (raw ds "SELECT source FROM login_attempt")) (str engine ": the open one stays"))
+     (is (= 1 (count-of ds "login_challenge")) (str engine ": and no other table is touched"))
+     (is (= 0 (aj/reclaim-expired-attempts! ds 200)) (str engine ": nothing left is 0"))
+     (doseq [bad [nil "200" :now (java.util.Date.) ##NaN 200.0]]
+       (is (= ["auth-base jdbc: reclaim-expired-attempts! takes now as an integer of epoch milliseconds" {:now bad}]
+              (try (aj/reclaim-expired-attempts! ds bad) nil (catch clojure.lang.ExceptionInfo e [(ex-message e) (ex-data e)])))
+           (str engine ": refuses " (pr-str bad)))
+       (is (= 1 (count-of ds "login_attempt")) (str engine ": and deletes nothing"))))))
+
+(deftest the-migrations-make-the-table-the-limit-reads
+  (on-engines (mapv statement-of migration-files)
+   (fn [engine ds]
+     (is (fn? (aj/rate-limiter ds {:limit 2 :window-ms 1000}))
+         (str engine ": the five files, run in order, give the limit its table")))))

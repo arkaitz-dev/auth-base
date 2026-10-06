@@ -431,6 +431,14 @@ proxies, which entry of `X-Forwarded-For` is the source is the stack's to say; w
 0.10.0 counts `:proxy-hops` from the right, since the entries to the left are the
 client's to write.
 
+**Amended 2026-10-06 (0.12.0): a limit every instance shares.** The shipped limiter is
+one process's table, so behind N instances a source has N times the limit. The JDBC
+store adds `rate-limiter`, the same fixed window counted in `login_attempt`: every
+statement portable, the count moved by compare-and-set so the last attempt goes to one
+of two racing instances and never both, a refusal written nowhere, and the source kept as
+its SHA-256 — not in the clear, though not anonymous: IPv4 has 2^32 addresses. The table
+grows by a row per source until the host's sweeper reclaims the closed windows.
+
 ## 12 · The bootstrap
 
 Settled in the first consumer's log, inherited as a general mechanism: the identities

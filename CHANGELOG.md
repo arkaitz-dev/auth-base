@@ -8,6 +8,11 @@ the README says "since" beside the behaviour. Every release is on Clojars as
 
 ## 0.12.0 — unreleased
 
+- `auth-jdbc/rate-limiter`: the sign-in rate limit shared by every instance of a host,
+  over the JDBC store's database, for `:rate-limit`. Its table and index come with
+  migrations 005 and 006, which `:libraries` runs at the next boot;
+  `reclaim-expired-attempts!` gives closed windows back, and belongs on the host's sweeper. A host that keeps the in-process limit gets the table and never reads it.
+  A copy of `ddl` in another migration tool gains its fifth and sixth statements.
 - `auth-web/sign-in-mail`: the standard sign-in email, `{:subject :text}` in the
   request's language, from two new dictionary keys, `:ab/mail-subject` and
   `:ab/mail-body`, in English and Spanish. A host hands it to its mailer from
