@@ -534,7 +534,8 @@ unchanged.
   will need: identifiers in a table of their own (many per subject), a change to the store
   port and to `jdbc`'s `ddl`, and answers to what happens when the new identifier already
   belongs to another subject and whether one may be removed. A mobile also means an SMS
-  sender, which, like mail, stays the host's (§14).
+  sender, which, like mail, stays the host's (§14). **Its first slice — a second email — was designed
+  2026-10-07: §18.**
 - **The rate limit's shape** — by address, by source, or both.
 - **The account lifecycle** past its first act: invitation, address change,
   deactivation. How an account *comes into being* is answered in §6, by `:on-unknown`,
@@ -620,3 +621,71 @@ not fall through to the bootstrap list.
 what shipped, the second factor, the rate limit's final shape, the account lifecycle,
 and whether `subject-for` may ever create. Implementation answered none of them and was
 not asked to.
+
+## 18 · A second identifier — designed 2026-10-07
+
+The first slice of §15's open row: a subject who signed in by email attaches another
+email address. A mobile, which needs an SMS sender, is a later slice. Decided by a
+two-stage panel (design, blast radius and minimality; then two debaters attacking the
+result) and by the user on the four points where the panel amended what the user had
+decided on 2026-10-03.
+
+**What the user decided**, the second list amending the first:
+
+- 2026-10-03: email only; adding or removing needs a recent sign-in; the first address
+  stays the primary and cannot be removed; a collision with another subject's address
+  answers the same page and sends nothing.
+- 2026-10-07: **a collision sends the link all the same.** "Sends nothing" is a branch on
+  what the store holds, and with delivery on the caller's thread it is hundreds of
+  milliseconds faster than a send — a signed-in person would read off the clock which
+  addresses have accounts, against §11. So issuing an attach link never asks the store,
+  exactly as `issue!` never does, and the collision is decided at redemption, where only
+  whoever holds that mailbox learns of it — and they can already sign in as its owner.
+- 2026-10-07: **the primary is told** when an address is attached ("X was added; if it was
+  not you, sign in and remove it"). An attached address survives "sign out everywhere",
+  so a stolen recent session could otherwise plant a permanent way back in, invisibly.
+  The primary cannot be removed, so the owner can always come back and take it out.
+- 2026-10-07: **removing an address ends every other session** of the subject and keeps
+  the browser that removed it signed in — revocation, then this session established
+  again at the new generation, in the same response. An address is removed because its
+  mailbox was lost, and the sessions opened through it are the subject's.
+- 2026-10-07: **the prompt to add another way in is shown at the sign-in that created the
+  account**, with "not now"; afterwards the page is reached from the identity slot. No
+  state is kept for it.
+
+**How it is built:**
+
+- **Schema.** `account` is untouched: `account.identifier` is the primary, and hosts read
+  it. A new `account_identifier (identifier PRIMARY KEY, subject, created_at)` holds
+  *every* identifier, the primary included, backfilled from `account`. One primary key
+  arbitrates every race — two subjects attaching one address, an attach against a
+  sign-up — where a table of secondaries only would leave it to a read, which this
+  library refuses everywhere else. `subject-for` and `identifiers-of` read it, so
+  `revoke!` drops the links of every address. `register!` writes both rows; its refusal
+  re-read also reads `account`, so an account a previous version registered during a
+  rolling deploy is not refused for ever.
+- **Port.** A third protocol beside `Store` and `Challenges`, required only by the attach
+  ceremony; `Store` is not extended, which would fail at the first call in any store
+  written before it.
+- **The attach link** lives in a table of its own, `identifier_challenge (token, subject,
+  generation, identifier, expires_at)`, which the sign-in redemption cannot see: an
+  attach link redeemed as a sign-in finds nothing, rather than registering a stranger
+  through `:on-unknown`. It is redeemed only by a live session of the same subject at the
+  same generation, in one conditional delete keyed on all three, so a link opened in
+  another browser is not spent, an intercepted one attaches nothing to anybody else, and
+  one issued before "sign out everywhere" is dead. `revoke!` drops a subject's attach
+  links too, and the expired ones are reclaimed beside the others.
+- **Recency** is a stamp of the ceremony's own, `:ab/signed-in-at`, written by
+  `establish` with the ceremony's clock. Not web-base's `born-at`: it exists only under
+  `:renew`, and any rotation resets it. A session without the stamp is not recent, so
+  every session from before this version signs in again before changing addresses.
+- **Removal** detaches first, then drops the address's pending links: once the row is
+  gone no sign-in for that address reaches this subject, and a link left over registers
+  at most a new, empty account, as any unknown address does.
+- A **bootstrap identity** (§12) has no record and cannot attach.
+- Issuing an attach link goes through the same source-keyed limit as signing in: a
+  signed-in person must not be able to mail any address at will.
+
+**Known consequence for hosts.** A host that matches something by `identifier-for` — the
+primary — will not match an attached address: `demo-ledger`'s invitations are one.
+
