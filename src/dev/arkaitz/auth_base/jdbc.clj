@@ -389,6 +389,12 @@
   `:window-ms` letting `:limit` attempts through per key, as `rate-limit/fixed-window`
   does in one process (SPEC §11). `:clock` defaults to the system's.
 
+  `:scope` is required (since 0.14.0): a name of this limit, which every key it counts is
+  stored under. Every limiter over one database writes the same table, so two limits
+  that count the same key — the sign-in's and a host's own, both by source address —
+  would share one count, in silence, without it. Give each its own name; two limiters
+  given the same `:scope` are one limit, which is what two instances of a host want.
+
   Its table, `login_attempt`, comes with the migrations (005) and is checked when this is
   called, so a database without it fails the boot, not a sign-in. The count is moved by
   compare-and-set, so two instances racing for the last attempt let one through, never
@@ -400,8 +406,14 @@
   not in the clear, and not anonymous (`bucket`). `:clock` is the limiter's own: the
   ceremony's is not handed to a function the way it is to a `:rate-limit` map, so a test
   that moves time passes its clock here too."
-  [ds {:keys [limit window-ms clock]}]
+  [ds {:keys [scope limit window-ms clock]}]
   (let [ds (datasource! ds)]
+    ;; A control character in the name could spell the separator below, and with it a
+    ;; key of another scope; a lone surrogate is encoded as `?`, which would make two
+    ;; names one.
+    (when-not (and (string? scope) (re-find #"\S" scope) (not (re-find #"[\p{Cc}\p{Cs}]" scope)))
+      (throw (ex-info "auth-base jdbc: the rate limit's :scope must name it: a non-blank string with no control characters"
+                      {:config-key [:rate-limit :scope]})))
     (when-not (pos-int? limit)
       (throw (ex-info "auth-base jdbc: the rate limit's :limit must be a positive integer" {:config-key [:rate-limit :limit]})))
     (when-not (pos-int? window-ms)
@@ -415,7 +427,7 @@
                            {:table "login_attempt" :config-key [:datasource]} e))))
     (let [clock (or clock #(System/currentTimeMillis))]
       (fn decide [key]
-        (let [source (bucket key)]
+        (let [source (bucket (str scope "\u0000" key))]
           (loop [attempt 1]
             (when (< attempt-retries attempt)
               (throw (ex-info (str "auth-base jdbc: a rate-limit window changed under " attempt-retries " attempts to count")

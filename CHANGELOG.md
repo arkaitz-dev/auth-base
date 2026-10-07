@@ -6,6 +6,20 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.14.0 — unreleased
+
+- **Breaking:** `auth-jdbc/rate-limiter` requires `:scope`, a name for the limit: a
+  non-blank string with no control characters, refused by `[:rate-limit :scope]`. Every
+  limiter over one database counts in `login_attempt`, so two limits keyed by the same
+  source shared one count in silence. Add `:scope "sign-in"` (any name) to yours. The
+  key it counts under changes, so every open window starts again once, at the deploy —
+  and while instances of 0.13 and 0.14 run side by side, a source can get up to twice the
+  limit; the old rows are reclaimed by `reclaim-expired-attempts!` as they close. Keys
+  are counted as their string form.
+- `auth/source-key`, the canonical source the sign-in limit counts by — one spelling per
+  address, an IPv6 address by its /64 — public for a limit of your own. It moved from
+  `handlers` to `rate-limit`, unchanged.
+
 ## 0.13.0 — 2026-10-07
 
 - **Changed:** `establish` stamps the session with `:ab/signed-in-at`, the ceremony's

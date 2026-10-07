@@ -439,6 +439,14 @@ of two racing instances and never both, a refusal written nowhere, and the sourc
 its SHA-256 — not in the clear, though not anonymous: IPv4 has 2^32 addresses. The table
 grows by a row per source until the host's sweeper reclaims the closed windows.
 
+**Amended 2026-10-08 (0.14.0): a limit has a name.** Every `rate-limiter` over one database
+counts in that one table, so a host's own limit keyed by the source address shared the
+sign-in's count with no error (sendmail-base/example FRICTION E3). `:scope` is required,
+not optional with a default: a default would let the second limiter collide exactly as
+before. And `source-key`, the canonical source the handlers count by, is public, so a
+host's limit is not the 2^64 buckets per IPv6 subscriber the sign-in's stopped being in
+0.8.0 (E4). Both decided by a two-stage panel.
+
 ## 12 · The bootstrap
 
 Settled in the first consumer's log, inherited as a general mechanism: the identities

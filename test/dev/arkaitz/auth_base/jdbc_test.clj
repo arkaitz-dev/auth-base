@@ -530,7 +530,7 @@
                    ["generation" aj/generation ["s"]] ["bump-generation!" aj/bump-generation! ["s"]]
                    ["reclaim-expired!" aj/reclaim-expired! [0]]
                    ["latest-challenge-token" aj/latest-challenge-token [ada]]
-                   ["rate-limiter" aj/rate-limiter [{:limit 2 :window-ms 1000}]]
+                   ["rate-limiter" aj/rate-limiter [{:scope "t" :limit 2 :window-ms 1000}]]
                    ["reclaim-expired-attempts!" aj/reclaim-expired-attempts! [0]]]]
        (doseq [[label f args] calls
                [bad what type] [[{:datasource ds} "a map" "clojure.lang.PersistentArrayMap"]
@@ -614,8 +614,11 @@
 ;; Known answers, computed with `shasum -a 256` and not with the code under test: a
 ;; recomputation here would share any encoding defect of its own.
 (def ^:private k "203.0.113.9")
-(def ^:private k-hex "d861b7e91033ebc1c1e8e7af3929010158b3241b54ca87ef73e79c32f26400ec")
-(def ^:private a-hex "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb")
+;; Under the scope "t", which every limiter here is given: SHA-256 of "t", NUL, the key —
+;; computed with Python's hashlib, not with shell printf, whose \0 swallows the digits after it.
+(def ^:private k-hex "de31f799a2d6d9034dce86ab75478f2c5dcab846cae377204b1d2baf0da2544f")
+(def ^:private a-hex "bc6f9628ae35013a85e6690988f42959a083d5c67d20dddc7b3c41f76222d69b")
+(def ^:private k-other-hex "18bc7da59c2874438f5f4e4f27e0ef7af0d65265ff30046ef633e5fce5af76c1")
 
 (def ^:private allowed {:allowed? true :retry-after-ms nil})
 
@@ -625,7 +628,7 @@
   (on-engines
    (fn [engine ds]
      (let [clock  (abt/clock 1000)
-           decide (aj/rate-limiter ds {:limit 2 :window-ms 1000 :clock clock})]
+           decide (aj/rate-limiter ds {:scope "t" :limit 2 :window-ms 1000 :clock clock})]
        (is (= allowed (decide k)) (str engine ": the first attempt opens the window"))
        (is (= [[k-hex 1 2000]] (attempts ds)) (str engine ": one row, the key's SHA-256, never the key"))
        (is (= allowed (decide k)) (str engine ": the second is within the limit"))
@@ -646,15 +649,26 @@
   (on-engines
    (fn [engine ds]
      (let [clock (abt/clock 1000)
-           l1    (aj/rate-limiter ds {:limit 2 :window-ms 1000 :clock clock})
-           l2    (aj/rate-limiter ds {:limit 2 :window-ms 1000 :clock clock})]
+           l1    (aj/rate-limiter ds {:scope "t" :limit 2 :window-ms 1000 :clock clock})
+           l2    (aj/rate-limiter ds {:scope "t" :limit 2 :window-ms 1000 :clock clock})]
        (is (= [allowed allowed] [(l1 k) (l2 k)]) (str engine ": one attempt through each"))
        (is (= [{:allowed? false :retry-after-ms 1000} {:allowed? false :retry-after-ms 1000}] [(l1 k) (l2 k)])
            (str engine ": and both refuse the third, which neither saw counted itself"))
        (is (= 1 (count-of ds "login_attempt")))))))
 
+(deftest two-limits-over-one-table-count-the-same-key-apart--two-instances-of-one-limit-together
+  (on-engines
+   (fn [engine ds]
+     (let [clock (constantly 1000)
+           t     (aj/rate-limiter ds {:scope "t" :limit 2 :window-ms 1000 :clock clock})
+           other (aj/rate-limiter ds {:scope "other" :limit 2 :window-ms 1000 :clock clock})
+           t-too (aj/rate-limiter ds {:scope "t" :limit 2 :window-ms 1000 :clock clock})]
+       (t k) (other k) (t-too k)
+       (is (= [[k-other-hex 1 2000] [k-hex 2 2000]] (attempts ds))
+           (str engine ": one key under two scopes is two rows, each its own count; the same scope twice is one count"))))))
+
 (defn- limiter-over [ds limit]
-  (aj/rate-limiter ds {:limit limit :window-ms 1000 :clock (constantly 1000)}))
+  (aj/rate-limiter ds {:scope "t" :limit limit :window-ms 1000 :clock (constantly 1000)}))
 
 (defn- naive-count
   "The limit without compare-and-set: read, then add one — the control that must let two
@@ -707,7 +721,7 @@
                                       [1 {:allowed? false :retry-after-ms 1000} [[k-hex 1 3000]]]]]
        (jdbc/execute! ds ["DELETE FROM login_attempt"])
        (plant! ds "INSERT INTO login_attempt (source, attempts, expires_at) VALUES (?, ?, ?)" k-hex 2 1500)
-       (let [over (fn [ds] ((aj/rate-limiter ds {:limit limit :window-ms 1000 :clock (constantly 2000)}) k))
+       (let [over (fn [ds] ((aj/rate-limiter ds {:scope "t" :limit limit :window-ms 1000 :clock (constantly 2000)}) k))
              {:keys [parked-in-time? exit slow fast]} (race ds (starts #"(?i)^\s*update") over over)]
          (is (and parked-in-time? (= :released exit)) (str engine ", limit " limit ": parked after its read, released after the reset"))
          (is (= [[:ok allowed] [:ok slow-answer]] [fast slow]) (str engine ", limit " limit ": the window reopened once"))
@@ -749,7 +763,7 @@
            c       (ceremony/ceremony {:store (aj/store ds) :deliver! (fn [_ _]) :clock (abt/clock 1000)
                                        :link {:base-url "https://x.test" :redeem-path "/entrar"}})
            {:keys [issue]} (handlers/handlers c {:view (fn [_ state] (pr-str state)) :login-path "/login"
-                                                 :rate-limit (aj/rate-limiter ds {:limit 1 :window-ms 30000 :clock limit-clock})})
+                                                 :rate-limit (aj/rate-limiter ds {:scope "t" :limit 1 :window-ms 30000 :clock limit-clock})})
            post    #(issue {:request-method :post :uri "/login" :form-params {"identifier" ada} :remote-addr "203.0.113.9"
                             :headers {}})
            first-r (post)
@@ -798,7 +812,7 @@
   ;; and 006 holds.
   (on-engines (into (subvec aj/ddl 0 4) (subvec aj/ddl 6))
    (fn [engine ds]
-     (let [e (try (aj/rate-limiter ds {:limit 2 :window-ms 1000}) nil (catch clojure.lang.ExceptionInfo e e))]
+     (let [e (try (aj/rate-limiter ds {:scope "t" :limit 2 :window-ms 1000}) nil (catch clojure.lang.ExceptionInfo e e))]
        (is (= ["auth-base jdbc: the rate limit could not read table login_attempt — migration 005 has not run"
                {:table "login_attempt" :config-key [:datasource]}]
               [(ex-message e) (ex-data e)])
@@ -810,10 +824,15 @@
      (doseq [[opts key] [[{:limit 0 :window-ms 1000} [:rate-limit :limit]] [{:limit nil :window-ms 1000} [:rate-limit :limit]]
                          [{:limit 2.5 :window-ms 1000} [:rate-limit :limit]] [{:limit "2" :window-ms 1000} [:rate-limit :limit]]
                          [{:limit 2 :window-ms 0} [:rate-limit :window-ms]] [{:limit 2 :window-ms -1} [:rate-limit :window-ms]]
-                         [{:limit 2} [:rate-limit :window-ms]] [{:limit 2 :window-ms 1000 :clock "now"} [:rate-limit :clock]]]]
-       (is (= {:config-key key} (ex-data (try (aj/rate-limiter ds opts) nil (catch clojure.lang.ExceptionInfo e e))))
+                         [{:limit 2} [:rate-limit :window-ms]] [{:limit 2 :window-ms 1000 :clock "now"} [:rate-limit :clock]]
+                         [{:scope nil :limit 2 :window-ms 1000} [:rate-limit :scope]] [{:scope "" :limit 2 :window-ms 1000} [:rate-limit :scope]]
+                         [{:scope "  " :limit 2 :window-ms 1000} [:rate-limit :scope]] [{:scope :sign-in :limit 2 :window-ms 1000} [:rate-limit :scope]]
+                         [{:scope "a\u0000b" :limit 2 :window-ms 1000} [:rate-limit :scope]] [{:scope "a\nb" :limit 2 :window-ms 1000} [:rate-limit :scope]]
+                         [{:scope "a\tb" :limit 2 :window-ms 1000} [:rate-limit :scope]] [{:scope "a\u007fb" :limit 2 :window-ms 1000} [:rate-limit :scope]]
+                         [{:scope "a\u0085b" :limit 2 :window-ms 1000} [:rate-limit :scope]] [{:scope "x\uD800" :limit 2 :window-ms 1000} [:rate-limit :scope]]]]
+       (is (= {:config-key key} (ex-data (try (aj/rate-limiter ds (merge {:scope "t"} opts)) nil (catch clojure.lang.ExceptionInfo e e))))
            (str engine ": " (pr-str opts) " refused naming " key)))
-     (is (fn? (aj/rate-limiter ds {:limit 2 :window-ms 1000})) (str engine ": control: without :clock it is built")))))
+     (is (fn? (aj/rate-limiter ds {:scope "t" :limit 2 :window-ms 1000})) (str engine ": control: without :clock it is built")))))
 
 (deftest reclaim-expired-attempts!-removes-closed-windows-only-and-counts-them
   (on-engines
@@ -834,7 +853,7 @@
 (deftest the-migrations-make-the-table-the-limit-reads
   (on-engines (mapv statement-of migration-files)
    (fn [engine ds]
-     (is (fn? (aj/rate-limiter ds {:limit 2 :window-ms 1000}))
+     (is (fn? (aj/rate-limiter ds {:scope "t" :limit 2 :window-ms 1000}))
          (str engine ": the five files, run in order, give the limit its table")))))
 
 ;; --- 7 · a second identifier (SPEC §18) ---------------------------------------------------

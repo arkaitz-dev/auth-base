@@ -639,8 +639,15 @@ and `:max-keys` counts per instance; a restart forgets every window. To share it
 store has one over its database (since 0.12.0):
 
 ```clojure
-:rate-limit (auth-jdbc/rate-limiter ds {:limit 5 :window-ms (* 15 60 1000)})
+:rate-limit (auth-jdbc/rate-limiter ds {:scope "sign-in" :limit 5 :window-ms (* 15 60 1000)})
 ```
+
+`:scope` names the limit, and is required (since 0.14.0): every limiter over one database
+counts in the same table, so a limit of your own — invitations, say — keyed by the same
+source would otherwise share the sign-in's count in silence. Two limiters with one scope
+are one limit, as two instances of a host want. Count your own by
+`(auth/source-key (:remote-addr request))`, the key the sign-in counts by: one spelling
+per address, and an IPv6 address by its /64.
 
 The same fixed window, counted in `login_attempt` (migration 005), so every instance sees
 one count and a restart forgets nothing. Two instances racing for the last attempt let
