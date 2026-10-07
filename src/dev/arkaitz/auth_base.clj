@@ -159,6 +159,12 @@
   the library, for a host that wants it somewhere other than on `:issue`."
   rate-limit/fixed-window)
 
+(def source-key
+  "`(source-key remote-addr)` → the key a request's source is counted under: one spelling
+  per address, an IPv6 address by its /64 — what the sign-in's own limit counts by, for a
+  limit of the host's (since 0.14.0)."
+  rate-limit/source-key)
+
 (def fixed-window-decider
   "`(fixed-window-decider {:limit n :window-ms n})` → the same limiter answering
   `{:allowed? bool :retry-after-ms n}`: what a host's own 429 needs for `Retry-After`,

@@ -22,7 +22,31 @@
   pass that removed the expired ones first would decide exactly the same thing
   every time, which is why there is not one."
   (:refer-clojure :exclude [key])
-  (:require [dev.arkaitz.auth-base.instant :as instant]))
+  (:require [clojure.string :as str]
+            [dev.arkaitz.auth-base.instant :as instant]))
+
+(defn source-key
+  "The key a request's source is counted under — `(source-key (:remote-addr request))` —
+  for a limit of the host's own as for the sign-in's (since 0.14.0): its address as one spelling —
+  `::1`, `0:0:0:0:0:0:0:1` and `[::1]` are one source — and an IPv6 address by its /64,
+  the smallest block a subscriber is given, or anyone could take a fresh bucket for
+  each of the 18 quintillion addresses theirs holds. Many are handed a /56 or a /48,
+  which this still counts as 256 or 65 536 sources: it bounds the abuse, it does not
+  end it. Only a literal is ever parsed, so no name
+  is looked up; anything else is counted as it came."
+  [remote-addr]
+  (let [addr (some-> remote-addr str (str/replace #"^\[|\]$" ""))]
+    (or (when (and addr (re-matches #"[0-9A-Fa-f:.]+" addr) (str/includes? addr ":"))
+          (try
+            (let [bytes (.getAddress (java.net.InetAddress/getByName addr))]
+              (if (= 4 (alength bytes))
+                (.getHostAddress (java.net.InetAddress/getByAddress bytes))
+                (str (str/join ":" (map #(format "%x" (bit-or (bit-shift-left (bit-and (aget bytes %) 0xff) 8)
+                                                              (bit-and (aget bytes (inc %)) 0xff)))
+                                        [0 2 4 6]))
+                     "::/64")))
+            (catch java.net.UnknownHostException _ nil)))
+        addr)))
 
 (def ^:private default-max-keys 10000)
 

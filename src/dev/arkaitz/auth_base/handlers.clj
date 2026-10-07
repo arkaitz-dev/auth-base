@@ -147,28 +147,6 @@
     :else (fail! ":rate-limit must be a map of options or a function of one key"
                  [:rate-limit] rate-limit)))
 
-(defn- source-key
-  "The key a request's source is counted under: its address as one spelling —
-  `::1`, `0:0:0:0:0:0:0:1` and `[::1]` are one source — and an IPv6 address by its /64,
-  the smallest block a subscriber is given, or anyone could take a fresh bucket for
-  each of the 18 quintillion addresses theirs holds. Many are handed a /56 or a /48,
-  which this still counts as 256 or 65 536 sources: it bounds the abuse, it does not
-  end it. Only a literal is ever parsed, so no name
-  is looked up; anything else is counted as it came."
-  [remote-addr]
-  (let [addr (some-> remote-addr str (str/replace #"^\[|\]$" ""))]
-    (or (when (and addr (re-matches #"[0-9A-Fa-f:.]+" addr) (str/includes? addr ":"))
-          (try
-            (let [bytes (.getAddress (java.net.InetAddress/getByName addr))]
-              (if (= 4 (alength bytes))
-                (.getHostAddress (java.net.InetAddress/getByAddress bytes))
-                (str (str/join ":" (map #(format "%x" (bit-or (bit-shift-left (bit-and (aget bytes %) 0xff) 8)
-                                                              (bit-and (aget bytes (inc %)) 0xff)))
-                                        [0 2 4 6]))
-                     "::/64")))
-            (catch java.net.UnknownHostException _ nil)))
-        addr)))
-
 (defn- whole-seconds
   "Rounded up, so a client that waits exactly this long finds the window open. By
   quotient and remainder rather than `(quot (+ ms 999) 1000)`: a window as long as a
@@ -405,7 +383,7 @@
        ;; answer differently for one that somebody had just asked about, and
        ;; would let anyone lock a known user out of their own login by spending
        ;; their allowance.
-       (let [{:keys [allowed? retry-after-ms]} (decide (source-key (:remote-addr request)))]
+       (let [{:keys [allowed? retry-after-ms]} (decide (rate-limit/source-key (:remote-addr request)))]
          (if-not allowed?
            (cond-> (response/status (response/response (render request {:limited? true})) 429)
              retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))
@@ -486,7 +464,7 @@
                  (to-page nil)
                  ;; The sign-in's own limit, by source: a signed-in person must not mail
                  ;; any address at will.
-                 (let [{:keys [allowed? retry-after-ms]} (decide (source-key (:remote-addr request)))]
+                 (let [{:keys [allowed? retry-after-ms]} (decide (rate-limit/source-key (:remote-addr request)))]
                    (if-not allowed?
                      (cond-> (response/status (response/response (view request (page-state request subject {:limited? true}))) 429)
                        retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))

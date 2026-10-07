@@ -11,6 +11,7 @@
   caller can grow until the process dies, and the tests below pin which of the
   two this is."
   (:require [clojure.test :refer [deftest is]]
+            [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.rate-limit :as rate-limit])
   (:import [clojure.lang ExceptionInfo]))
 
@@ -362,3 +363,18 @@
       (run! #(allow? (str "probe-" %)) (range 64))
       (is (every? true? (map allow? survivors))
           "64 probes opened after the race pushed every window it left out: none was stranded outside the index"))))
+
+;; --- the source key (public since 0.14.0) -------------------------------------------------
+
+(deftest the-source-key-is-one-spelling-per-address--an-ipv6-address-counted-by-its-64
+  (is (= ["0:0:0:0::/64" "0:0:0:0::/64" "0:0:0:0::/64"]
+         (mapv rate-limit/source-key ["::1" "0:0:0:0:0:0:0:1" "[::1]"]))
+      "every spelling of one address is one source")
+  (is (= ["2001:db8:1:2::/64" "2001:db8:1:2::/64" "2001:db8:1:3::/64"]
+         (mapv rate-limit/source-key ["2001:db8:1:2:aaaa::1" "2001:db8:1:2:bbbb::9" "2001:db8:1:3::1"]))
+      "two addresses in one /64 are one source, and the next /64 another")
+  (is (= "192.0.2.7" (rate-limit/source-key "::ffff:192.0.2.7")) "an IPv4 address written as IPv6 is its IPv4")
+  (is (= ["192.0.2.7" "localhost" "example.test" nil]
+         (mapv rate-limit/source-key ["192.0.2.7" "localhost" "example.test" nil]))
+      "anything else is counted as it came — a name is never looked up")
+  (is (= "0:0:0:0::/64" (auth/source-key "::1")) "and the facade answers the same"))
