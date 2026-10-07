@@ -6,7 +6,7 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.14.0 — unreleased
+## 0.14.0 — 2026-10-08
 
 - **Breaking:** `auth-jdbc/rate-limiter` requires `:scope`, a name for the limit: a
   non-blank string with no control characters, refused by `[:rate-limit :scope]`. Every
