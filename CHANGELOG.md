@@ -6,7 +6,7 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.13.0 — unreleased
+## 0.13.0 — 2026-10-07
 
 - **Changed:** `establish` stamps the session with `:ab/signed-in-at`, the ceremony's
   clock at the sign-in, and `auth/recent?` reads it: `(recent? ceremony session
