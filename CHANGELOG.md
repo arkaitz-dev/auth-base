@@ -27,6 +27,13 @@ the README says "since" beside the behaviour. Every release is on Clojars as
   only to attach: `:notify!` `(fn [identifier message request])`, which sends the attach
   link and the notices to the primary, and `:link :attach-path`. `revoke!` drops the
   subject's attach links too.
+- The plugin's `:identifiers-path` (and the handlers'): a page listing the subject's
+  addresses, adding one by a link and removing one, within `:recent-ms` (fifteen minutes)
+  of a sign-in; adding goes through the sign-in's limit. The attach link opens a page
+  naming the account it adds to. The sign-in that registers an account lands there,
+  `?ab=welcome`. `auth-web/mail` writes the three messages `:notify!` is handed, in
+  English and Spanish; the identity slot links to the page. `ceremony/redeem-detail!`
+  says whether a redemption registered the account.
 
 ## 0.12.0 — 2026-10-06
 

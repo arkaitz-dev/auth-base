@@ -442,6 +442,39 @@ composed over `auth/subject-fn` must answer nil when there is no live subject: a
 `:subject-fn` that answers something for a revoked session — a guest, a subject read
 straight from the session — leaves its row to expire rather than go.
 
+## A second way in (since 0.13.0)
+
+A subject who signed in by email can add another address and sign in by either. The
+new address proves itself by a link of its own, opened in the browser that asked, by the
+same subject, within fifteen minutes of a sign-in (SPEC §18). Under the plugin it is one
+key, and the ceremony's two:
+
+```clojure
+(auth/ceremony {… :notify! (fn [identifier message request]
+                            (mail/send! mailer (assoc (auth-web/mail request message) :to identifier)))
+                  :link    {:base-url origin :redeem-path "/login/redeem" :attach-path "/addresses/confirm"}})
+
+(auth-web/plugin ceremony {… :identifiers-path "/addresses"})
+```
+
+`/addresses` lists the subject's addresses — the first one marked as the main one, which
+cannot be removed — with a form to add one and a button to remove each other. Adding
+sends a link to the address, **whoever holds it**: whether an address has an account is
+never answered by timing, so the person who opens it learns that it could not be added,
+and nobody else does. Opening the link names the account it would join before anything
+is pressed. Adding tells the main address, and so does removing: an address survives
+"sign out everywhere", and one planted by a stolen session would otherwise be a way back
+in that nobody sees. Removing an address ends every other session of the subject and
+keeps the browser that removed it. The sign-in that creates an account lands on the page
+with `?ab=welcome`, asking for another way in, with a link past it.
+
+`:notify!` is handed `{:ab/kind :attach-link :ab/link url}`, then `:attached` or
+`:detached` with `:ab/identifier`; `auth-web/mail` writes each in the request's language,
+from the `:ab/mail-attach-*`, `:ab/mail-attached-*` and `:ab/mail-detached-*` keys. A store
+of your own needs `store/Identifiers`; `auth-jdbc/store` and the in-memory one have it,
+and migrations 007-011 bring its tables. A host matching something by `identifier-for`
+— an invitation — matches the main address alone.
+
 ## The store port
 
 ```clojure
@@ -563,7 +596,8 @@ something to name when there is no local identity at all.
 | `:store` | an implementation of the port (required) |
 | `:deliver!` | `(fn [identifier link])` (required, or the next); in development, `dev.arkaitz.auth-base.console/deliver!` prints the link — never in production, where it would put a credential in the logs |
 | `:deliver-with-request!` | `(fn [identifier link request])`, in place of `:deliver!` (since 0.7.0): the request that asked for the link, so the message speaks its language (`:wb/locale`, `:wb/tr`). Take what you need from it; do not log or keep it, since it carries the cookie and the session |
-| `:link` | `{:base-url "https://host" :redeem-path "/entrar"}` (required) |
+| `:link` | `{:base-url "https://host" :redeem-path "/entrar"}` (required), and `:attach-path` for a second identifier (since 0.13.0) |
+| `:notify!` | `(fn [identifier message request])`, the attach link and the notices to the main address (since 0.13.0); needed only for a second identifier |
 | `:ttl-ms` | how long a challenge lives (default 15 minutes) |
 | `:clock` | `(fn [])` → epoch milliseconds (default the system clock) |
 | `:bootstrap` | identifiers that hold no record and may still enter |
@@ -584,6 +618,8 @@ something to name when there is no local identity at all.
 | `:after-logout` | where a logout lands (default `:login-path`) |
 | `:field` | the form field holding the identifier (default `identifier`) |
 | `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean-or-decision)`, or absent — see below for what a refusal answers; the map also takes `:max-keys`, how many sources it tracks at once (10000), dropping the oldest window when full |
+| `:identifiers-path` | the page where a subject sees, adds and removes its addresses (since 0.13.0; default none); needs the ceremony's `:notify!`, `:link :attach-path` and a store with `Identifiers`, refused at construction without them |
+| `:recent-ms` | how recent the sign-in must be to add or remove an address (default fifteen minutes) |
 | `:keep-session` | a set of keys of the session the redemption arrives with that the signed-in session keeps (since 0.7.0) — `#{:locale}` for a language chosen before signing in. The id still rotates and everything else is dropped; `:ab/` keys and the CSRF token are refused. What is kept was written before anyone signed in, possibly by whoever planted the session: check it where you use it, and keep nothing that grants authority |
 
 The rate limit is keyed by `:remote-addr` — the **source**, never the address. Counting

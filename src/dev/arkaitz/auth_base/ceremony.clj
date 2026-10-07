@@ -238,6 +238,8 @@
       (when (contains? bootstrap identifier)
         {:ab/identifier identifier :ab/bootstrap? true}))))
 
+(declare redeem-detail!)
+
 (defn redeem!
   "Spends `token` and returns the subject it attests, or nil.
 
@@ -267,13 +269,20 @@
   back is refused by name. One read at registration buys a revocation that works;
   an ordinary sign-in never pays it. The challenge is already spent, so a refusal
   fails closed."
+  [ceremony token]
+  (:ab/subject (redeem-detail! ceremony token)))
+
+(defn redeem-detail!
+  "`redeem!`, answering `{:ab/subject s :ab/registered? b}` or nil: whether this
+  redemption is the one that registered the account through `:on-unknown`, which is
+  when a subject with a single way in is asked for another (SPEC §18)."
   [{:keys [store clock normalise on-unknown] :as ceremony} token]
   (when (token/well-formed? token)
     (when-let [row (store/take-challenge! store token)]
       (when (< (clock) (:ab/expires-at row))
         (let [identifier (:ab/identifier row)]
           (if-some [subject (subject-of ceremony identifier)]
-            subject
+            {:ab/subject subject :ab/registered? false}
             (when on-unknown
               (let [canonical (normalise identifier)]
                 (when-some [minted (on-unknown canonical)]
@@ -285,7 +294,7 @@
                                          " with it could never be revoked (SPEC §10): return what the"
                                          " store will answer from now on")
                                     {:config-key [:on-unknown]})))
-                  minted)))))))))
+                  {:ab/subject minted :ab/registered? true})))))))))
 
 (defn generation
   "The subject's current revocation generation, to be carried by the session
@@ -335,9 +344,10 @@
 
 ;; --- a second identifier (SPEC §18) --------------------------------------------------
 
-(defn- attaching!
+(defn attaching!
   "The ceremony's store, refused unless it can attach: what `issue-attach!`,
-  `redeem-attach!` and `detach!` need, named by the key a host sets."
+  `redeem-attach!` and `detach!` need, named by the key a host sets. The handlers ask it
+  when they are built with an `:identifiers-path`, so a missing piece stops the boot."
   [{:keys [store notify! link]}]
   (when-not (satisfies? store/Identifiers store)
     (fail! ":store must implement dev.arkaitz.auth-base.store/Identifiers to attach an identifier"

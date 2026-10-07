@@ -4,7 +4,8 @@
 
   The host supplies **one** view. It is called with the request and one of five
   states — `{}`, `{:sent? true}`, `{:spent? true}`, `{:limited? true}`, `{:confirm? true}`
-  — and returns
+  — or, with an `:identifiers-path`, three more: `{:identifiers? true …}`,
+  `{:attach-confirm? true …}` and `{:attach-elsewhere? true}` (since 0.13.0) — and returns
   whatever that host's renderer accepts as a `:body`: Hiccup under web-base, a string
   under plain Ring. That is the whole of what this module knows about pages.
   `:limited?` is the sign-in form refused by the rate limit, answered with status 429
@@ -44,6 +45,7 @@
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.rate-limit :as rate-limit]
             [dev.arkaitz.auth-base.session :as session]
+            [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.token :as token]
             [ring.util.codec :as codec]
             [ring.util.response :as response]))
@@ -52,7 +54,13 @@
 
 (def ^:private handler-keys
   #{:view :login-path :logout-path :revoke-path :after-login :after-logout :field :rate-limit :keep-session
-    :on-logout :on-revoke})
+    :on-logout :on-revoke :identifiers-path :recent-ms})
+
+(def ^:private default-recent-ms
+  "How recent a sign-in must be to change how the subject signs in (SPEC §18): long
+  enough to add an address and open its link, short enough that a session left open is
+  not enough."
+  (* 15 60 1000))
 
 (defn- fail! [message config-key value]
   (throw (ex-info (str "auth-base handlers: " message)
@@ -92,6 +100,10 @@
     "sent"  {:sent? true}
     "spent" {:spent? true}
     {}))
+
+(def ^:private identifiers-flags
+  "What `?ab=` may say on the identifiers page, each a state key the view reads."
+  {"sent" :sent? "added" :added? "taken" :taken? "removed" :removed? "spent" :spent? "welcome" :welcome?})
 
 (defn- token-of
   "The path segment after the redemption path, or nil. Percent-decoding is not
@@ -278,6 +290,19 @@
                    logging backend cannot render it. An Error passes, whether the hook
                    or the backend's rendering of the hook's exception raises it. A session store that itself fails still
                    leaves the logout unfinished: that is the base's 500
+    :identifiers-path
+                   where a signed-in subject sees and changes the addresses it signs in
+                   with (SPEC §18): a GET page, its POST adding one — through the same
+                   limit as the sign-in — and `<path>/remove`. Absent, none of it exists.
+                   It needs the ceremony's `:notify!`, `:link :attach-path` and a store
+                   implementing `Identifiers`, and is refused here without them. The
+                   attach link's GET and POST are then mounted under `:attach-path`, and
+                   the sign-in that registers an account lands here, `?ab=welcome`, asking
+                   for another way in. The view is handed `{:identifiers? true …}` for
+                   the page and `{:attach-confirm? true …}` / `{:attach-elsewhere? true}`
+                   for a link opened in a browser signed in, or not
+    :recent-ms     how recent the sign-in must be to add or remove an address
+                   (default fifteen minutes)
     :on-revoke     `(fn [request subject])`, called after `revoke!` has moved the
                    subject's generation — so a host's failure there never leaves a
                    revocation undone — and before this session is ended. Its return
@@ -290,7 +315,7 @@
   applies. CSRF is the host's too, for the same reason: web-base has it, and a
   bare Ring host must bring it."
   [ceremony {:keys [view login-path logout-path revoke-path after-login after-logout field rate-limit
-                    keep-session on-logout on-revoke]
+                    keep-session on-logout on-revoke identifiers-path recent-ms]
              :as   opts}]
   (when-let [unknown (not-empty (remove handler-keys (keys opts)))]
     (fail! (str "unknown option" (when (next unknown) "s") ": " (pr-str (vec (sort unknown)))
@@ -301,6 +326,12 @@
   (check-path! :login-path login-path)
   (some->> logout-path (check-path! :logout-path))
   (some->> revoke-path (check-path! :revoke-path))
+  (when identifiers-path
+    (check-path! :identifiers-path identifiers-path)
+    ;; Every piece the acts need, refused at boot rather than at somebody's click.
+    (ceremony/attaching! ceremony))
+  (when-not (or (nil? recent-ms) (pos-int? recent-ms))
+    (fail! ":recent-ms must be a positive whole number of milliseconds" [:recent-ms] recent-ms))
   (doseq [k [:on-logout :on-revoke]]
     (when-not (or (nil? (get opts k)) (ifn? (get opts k)))
       (fail! (str k " must be a function") [k] (get opts k))))
@@ -326,7 +357,32 @@
         spent        (no-store (response/redirect (str login-path "?ab=spent") :see-other))
         blank        (no-store (response/redirect login-path :see-other))
         render       (fn [request state]
-                       (view request (assoc state :action login-path :field field)))]
+                       (view request (assoc state :action login-path :field field)))
+        recent-ms    (or recent-ms default-recent-ms)
+        attach-path  (get-in ceremony [:link :attach-path])
+        remove-path  (some-> identifiers-path (str "/remove"))
+        to-page      (fn [flag] (no-store (response/redirect (cond-> identifiers-path flag (str "?ab=" flag)) :see-other)))
+        to-login     (fn [] (no-store (response/redirect (str login-path "?next=" (codec/url-encode identifiers-path)) :see-other)))
+        ;; A bootstrap identity has no account to attach to (SPEC §12, §18): to every act
+        ;; here it is a session with nothing to change, never a request that fails.
+        recent?      (fn [request] (and (not (:ab/bootstrap? (subject-of request)))
+                                        (session/recent? ceremony (:session request) recent-ms)))
+        page-state   (fn [request subject extra]
+                       (let [store      (:store ceremony)
+                             ;; A bootstrap identity has no record: the store is not asked
+                             ;; about a key it never holds.
+                             bootstrap? (boolean (:ab/bootstrap? subject))]
+                         (merge {:identifiers? true
+                                 :identifiers  (if bootstrap? [] (store/identifiers-of store subject))
+                                 :primary      (when-not bootstrap? (store/primary-of store subject))
+                                 :recent?      (boolean (recent? request))
+                                 :action       identifiers-path
+                                 :remove       remove-path
+                                 :login        login-path
+                                 :skip         (or (next-of request) after-login)
+                                 :field        field}
+                                (some-> (identifiers-flags (flag request)) (vector true) (->> (apply hash-map)))
+                                extra)))]
     (cond->
     {:paths {:login login-path :logout logout-path :redeem (str redeem-path "/:token")}
 
@@ -385,12 +441,20 @@
 
      :redeem
      (fn [request]
-       (let [subject (some->> (token-of redeem-path (:uri request))
-                              (ceremony/redeem! ceremony))]
-         (-> (if (some? subject)
+       (let [{subject :ab/subject registered? :ab/registered? :as redeemed}
+             (some->> (token-of redeem-path (:uri request))
+                      (ceremony/redeem-detail! ceremony))]
+         (-> (if (some? redeemed)
                (session/establish ceremony
-                                  (cond-> (response/redirect (or (local-path (get-in request [:session :ab/return-to]))
-                                                                 after-login)
+                                  (cond-> (response/redirect (cond
+                                                               ;; The sign-in that made the account: ask for another
+                                                               ;; way in, once, with a way past it (SPEC §18).
+                                                               (and registered? identifiers-path)
+                                                               (str identifiers-path "?ab=welcome"
+                                                                    (some->> (local-path (get-in request [:session :ab/return-to]))
+                                                                             codec/url-encode (str "&next=")))
+                                                               :else (or (local-path (get-in request [:session :ab/return-to]))
+                                                                         after-login))
                                                              :see-other)
                                     (seq keep-session) (assoc :session (select-keys (:session request) keep-session)))
                                   subject)
@@ -404,6 +468,78 @@
        ;; fails costs its own record of the device, never the sign-out (since 0.10.0).
        (when on-logout (run-hook! ":on-logout" #(on-logout request)))
        (signed-out))}
+
+      identifiers-path
+      (-> (update :paths assoc :identifiers identifiers-path :remove remove-path :attach (str attach-path "/:token"))
+          (assoc
+           :identifiers
+           ;; The subject is `subject-fn`'s, every time: a revoked session names nobody.
+           (fn [request]
+             (if-some [subject (subject-of request)]
+               (no-store (response/response (view request (page-state request subject {}))))
+               (to-login)))
+
+           :add
+           (fn [request]
+             (if-some [subject (subject-of request)]
+               (if-not (recent? request)
+                 (to-page nil)
+                 ;; The sign-in's own limit, by source: a signed-in person must not mail
+                 ;; any address at will.
+                 (let [{:keys [allowed? retry-after-ms]} (decide (source-key (:remote-addr request)))]
+                   (if-not allowed?
+                     (cond-> (response/status (response/response (view request (page-state request subject {:limited? true}))) 429)
+                       retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))
+                       true           no-store)
+                     (let [identifier (get (:form-params request) field)]
+                       (if (and (submitted? identifier) (fits? ceremony identifier))
+                         (do (ceremony/issue-attach! ceremony subject identifier request)
+                             (to-page "sent"))
+                         (to-page nil))))))
+               (to-login)))
+
+           :remove
+           (fn [request]
+             (if-some [subject (subject-of request)]
+               (let [generation (when (recent? request)
+                                  (ceremony/detach! ceremony subject (get (:form-params request) field) request))]
+                 (if generation
+                   ;; This browser stays signed in at the generation the removal moved to;
+                   ;; every other session of the subject has ended.
+                   (session/re-establish (to-page "removed") (:session request) generation)
+                   (to-page nil)))
+               (to-login)))
+
+           :attach-confirm
+           ;; A GET spends nothing, as the sign-in link's does; the page names the account
+           ;; the address would join, so a person tricked into signing in as somebody else
+           ;; sees whose account it is before pressing anything.
+           (fn [request]
+             (let [subject (subject-of request)]
+               (-> (cond
+                     (not (some-> (token-of attach-path (:uri request)) token/well-formed?))
+                     (if subject (to-page "spent") spent)
+
+                     (and (some? subject) (not (:ab/bootstrap? subject)))
+                     (response/response (view request {:attach-confirm? true :action (:uri request)
+                                                       :account (store/primary-of (:store ceremony) subject)}))
+
+                     :else
+                     (response/response (view request {:attach-elsewhere? true :login login-path})))
+                   (response/header "Referrer-Policy" "no-referrer")
+                   no-store)))
+
+           :attach
+           (fn [request]
+             (-> (if-some [subject (subject-of request)]
+                   (if-not (recent? request)
+                     (to-page nil)
+                     (case (ceremony/redeem-attach! ceremony subject (token-of attach-path (:uri request)) request)
+                       :attached (to-page "added")
+                       :taken    (to-page "taken")
+                       (to-page "spent")))
+                   (to-login))
+                 (response/header "Referrer-Policy" "no-referrer")))))
 
       revoke-path
       (-> (assoc-in [:paths :revoke] revoke-path)
@@ -422,13 +558,17 @@
   `(into (auth/routes ceremony opts) my-routes)`. This is data — vectors and
   maps — and costs no dependency: reitit is the host's, not this module's."
   [ceremony opts]
-  (let [{:keys [paths form issue confirm redeem logout revoke]} (handlers ceremony opts)]
+  (let [{:keys [paths form issue confirm redeem logout revoke identifiers add remove attach-confirm attach]}
+        (handlers ceremony opts)]
     (cond-> [[(:login paths)  {:get {:handler form} :post {:handler issue}}]
              ;; The token is the path's last segment: web-base 0.9.0 and later log this route by
              ;; its template instead. An earlier web-base, or any other reitit host, ignores it.
              [(:redeem paths) {:wb/log-path :template :get {:handler confirm} :post {:handler redeem}}]
              [(:logout paths) {:post {:handler logout}}]]
-      revoke (conj [(:revoke paths) {:post {:handler revoke}}]))))
+      revoke      (conj [(:revoke paths) {:post {:handler revoke}}])
+      identifiers (into [[(:identifiers paths) {:get {:handler identifiers} :post {:handler add}}]
+                         [(:remove paths) {:post {:handler remove}}]
+                         [(:attach paths) {:wb/log-path :template :get {:handler attach-confirm} :post {:handler attach}}]]))))
 
 (defn unauthorized
   "The `401` SPEC §14 asks this module for. web-base declines to emit one

@@ -38,14 +38,32 @@
 (def ^:private signed-in {:wb/subject {:id 1} :wb/tr sentinel-tr :anti-forgery-token "T"})
 (def ^:private anonymous {:wb/tr sentinel-tr :anti-forgery-token "T"})
 
+(def ^:private identifiers-states
+  "The identifiers page in each state it is handed — after each act, signed in recently
+  and not — and an attach link opened signed in and not (SPEC §18)."
+  (let [page {:identifiers? true :identifiers ["a@x.test" "b@x.test"] :primary "a@x.test"
+              :action "/addresses" :remove "/addresses/remove" :login "/login" :skip "/" :field "identifier"}]
+    (concat (for [flag [nil :welcome? :sent? :added? :removed? :taken? :spent? :limited?]
+                  recent? [true false]]
+              (cond-> (assoc page :recent? recent?) flag (assoc flag true)))
+            [{:attach-confirm? true :action "/sumar/T" :account "a@x.test"}
+             {:attach-elsewhere? true :login "/login"}])))
+
+(def ^:private addresses #{"a@x.test" "b@x.test" "https://x.test/link"})
+
 (deftest every-word-of-every-standard-page-comes-from-the-dictionary
   (let [pages (concat (map #(web/view anonymous %) (abt/view-states))
-                      [(web/identity signed-in {:revoke-path "/everywhere"})
+                      (map #(web/view signed-in %) identifiers-states)
+                      [(web/identity signed-in {:revoke-path "/everywhere" :identifiers-path "/addresses"})
                        (web/identity anonymous)])
-        mail  (web/sign-in-mail anonymous "https://x.test/link")
-        words (concat (mapcat text-of pages)
-                      (str/split (:subject mail) #"\s+")
-                      (remove #{"https://x.test/link"} (str/split (:text mail) #"\s+")))]
+        mails (into [(web/sign-in-mail anonymous "https://x.test/link")]
+                    (map #(web/mail anonymous %) [{:ab/kind :attach-link :ab/link "https://x.test/link"}
+                                                  {:ab/kind :attached :ab/identifier "b@x.test"}
+                                                  {:ab/kind :detached :ab/identifier "b@x.test"}]))
+        words (remove addresses
+                      (concat (mapcat text-of pages)
+                              (mapcat #(str/split (:subject %) #"\s+") mails)
+                              (mapcat #(str/split (:text %) #"\s+") mails)))]
     (is (< 20 (count words)) (str "witness: the pages have words to check: " (count words)))
     (is (= [] (vec (remove sentinel? words)))
         "no word is spelt in the markup: each one is a key a host can translate or replace")
