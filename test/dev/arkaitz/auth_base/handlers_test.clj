@@ -167,8 +167,8 @@
         good  (redeem (mock/request :get (str "/entrar/" token)))]
     (is (= "/home" (get-in good [:headers "Location"]))
         "the redemption lands where the host said, not on a hard-coded path")
-    (is (= {:ab/subject {:id 1} :ab/generation 0} (:session good))
-        "carrying the subject and the generation it was born with")
+    (is (= {:ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at 1000} (:session good))
+        "carrying the subject, the generation it was born with, and when, by the ceremony's clock")
     (is (= {:recreate true} (meta (:session good)))
         "marked for rotation, which is the fixation defence (SPEC §9)")
     (doseq [[label uri]
@@ -707,13 +707,13 @@
       (is (nil? (ring-store/read-session store "planted"))
           "the planted id is gone: the defence against fixation survives :keep-session")
       (is (and (some? fresh) (not= "planted" fresh)) (str "the browser holds another id: " (pr-str fresh)))
-      (is (= {:locale "eu" :return-to "/x" :ab/subject {:id 1} :ab/generation 0} (ring-store/read-session store fresh))
+      (is (= {:locale "eu" :return-to "/x" :ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at 1000} (ring-store/read-session store fresh))
           "the named keys survived; the marker and the pre-login CSRF token did not; the subject is the redemption's"))
     (let [{:keys [store fresh]} (signed {} "planted")]
-      (is (= {:ab/subject {:id 1} :ab/generation 0} (ring-store/read-session store fresh))
+      (is (= {:ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at 1000} (ring-store/read-session store fresh))
           "control: without the option nothing of the old session survives, as before it existed"))
     (let [{:keys [store fresh]} (signed {:keep-session #{:locale}} nil)]
-      (is (= {:ab/subject {:id 1} :ab/generation 0} (ring-store/read-session store fresh))
+      (is (= {:ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at 1000} (ring-store/read-session store fresh))
           "an arrival with no session and something to keep still signs in, keeping nothing"))
     (let [{:keys [f token]} (signed {:keep-session #{:locale}} nil)
           spent-request (-> (mock/request :get (str "/entrar/" token)) (assoc :session {:locale "eu"}))]
@@ -768,7 +768,8 @@
       (is (= "/home" (get-in opened [:headers "Location"])) "witness: the redemption signed in")
       (is (and (some? s1) (not= s0 s1)) "and rotated the id")
       (is (nil? (get @sessions s0)) "the old session is gone")
-      (is (= {:locale "eu" :ab/subject {:id 1} :ab/generation 0} (get @sessions s1))
+      (is (int? (get-in @sessions [s1 :ab/signed-in-at])) "witness: the session carries its sign-in stamp")
+      (is (= {:locale "eu" :ab/subject {:id 1} :ab/generation 0} (dissoc (get @sessions s1) :ab/signed-in-at))
           "the kept key crossed the rotation; the marker did not (auth-base copied only what it was told), nor the token (web-base minted none for a redirect)")
       (is (= 403 (:status (post "/lang" s1 t0 {}))) "the pre-login token does not work in the signed-in session")
       (let [home (app (-> (mock/request :get "/home") (mock/header "Cookie" (str "ring-session=" s1))))
@@ -911,7 +912,7 @@
           token (issued! kept "ada@x.test")
           r ((:redeem kept) (assoc (mock/request :post (str "/entrar/" token)) :session {:ab/return-to "/x" :locale "eu"}))]
       (is (= "/x" (get-in r [:headers "Location"])) "witness: returned")
-      (is (= {:locale "eu" :ab/subject {:id 1} :ab/generation 0} (:session r))
+      (is (= {:locale "eu" :ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at 1000} (:session r))
           "and the signed-in session does not carry the return address past the sign-in"))))
 
 (deftest the-limit-counts-one-source-per-address-spelling-and-per-ipv6-64

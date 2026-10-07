@@ -6,6 +6,14 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.13.0 — unreleased
+
+- **Changed:** `establish` stamps the session with `:ab/signed-in-at`, the ceremony's
+  clock at the sign-in, and `auth/recent?` reads it: `(recent? ceremony session
+  within-ms)`. A change to how a subject signs in asks for a recent sign-in (SPEC §18).
+  A session from an earlier version has no stamp and is not recent, so its holder signs
+  in again before such a change. Nothing else about a session changes.
+
 ## 0.12.0 — 2026-10-06
 
 - Declares web-base 0.15.0, whose `:session :renew` slides a signed-in session.

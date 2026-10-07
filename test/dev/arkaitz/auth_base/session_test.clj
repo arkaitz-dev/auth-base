@@ -9,6 +9,7 @@
   planted, a login happens, and the old key must be gone."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.session :as session]
             [dev.arkaitz.auth-base.store :as store]
@@ -19,11 +20,17 @@
             [ring.middleware.session.store :as ring-store]
             [ring.mock.request :as mock]))
 
+(def ^:private now
+  "The fixture's clock: a number nothing else here produces, so a stamp that came from
+  anywhere but the ceremony's clock cannot equal it."
+  1789000123456)
+
 (defn- fixture []
   (let [inner (store/in-memory {:subjects {"ada@x.test" {:id 1}}})]
     {:store    inner
      :ceremony (ceremony/ceremony {:store    inner
                                    :deliver! (fn [_ _])
+                                   :clock    (constantly now)
                                    :link     {:base-url "https://x.test" :redeem-path "/entrar"}})}))
 
 (defn- session-cookie [response]
@@ -35,8 +42,8 @@
 (deftest establish-marks-the-session-map-itself--not-the-response
   (let [{:keys [ceremony]} (fixture)
         response (session/establish ceremony {:status 303 :headers {"Location" "/"} :body ""} {:id 1})]
-    (is (= {:ab/subject {:id 1} :ab/generation 0} (:session response))
-        "the session carries the subject and the generation it was born with")
+    (is (= {:ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at now} (:session response))
+        "the session carries the subject, the generation it was born with, and when, by the ceremony's clock")
     (is (= {:recreate true} (meta (:session response)))
         "and the mark is on the session map, which is the only place Ring reads it")
     (is (nil? (meta response))
@@ -49,11 +56,12 @@
         response (session/establish ceremony
                                     {:status 200 :headers {} :body ""
                                      :session ^{:foo 1} {:lang "eu" :return-to "/x"
-                                                         :ab/subject {:id 9} :ab/generation 4}}
+                                                         :ab/subject {:id 9} :ab/generation 4
+                                                         :ab/signed-in-at 5}}
                                     {:id 1})]
-    (is (= {:lang "eu" :return-to "/x" :ab/subject {:id 1} :ab/generation 0}
+    (is (= {:lang "eu" :return-to "/x" :ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at now}
            (:session response))
-        "what the host put there survives the login, and the new subject wins over the old")
+        "what the host put there survives the login, and the new subject and sign-in time win over the old")
     (is (= {:foo 1 :recreate true} (meta (:session response)))
         "and the mark is added to whatever metadata was already there, not instead of it")))
 
@@ -77,8 +85,29 @@
           "after the login the planted id is gone — this is the fixation defence")
       (is (and (some? fresh) (not= "planted" fresh))
           (str "and the browser was given a different id: " (pr-str fresh)))
-      (is (= {:ab/subject {:id 1} :ab/generation 0} (ring-store/read-session store fresh))
+      (is (= {:ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at now} (ring-store/read-session store fresh))
           "which is where the subject now lives"))))
+
+(deftest recent?-reads-the-sign-in-stamp-against-the-ceremonys-clock
+  (let [{:keys [ceremony]} (fixture)
+        signed  (:session (session/establish ceremony {} {:id 1}))
+        at      (fn [stamp] (assoc signed :ab/signed-in-at stamp))]
+    (is (= now (:ab/signed-in-at signed)) "witness: establish stamped the ceremony's clock")
+    (is (true? (session/recent? ceremony signed 1)) "a session signed in now is recent within any window")
+    (is (true? (auth/recent? ceremony signed 1)) "and the facade answers the same")
+    (is (false? (auth/recent? ceremony (at (- now 600000)) 600000)) "through the facade too, the window's length is not")
+    (is (true? (session/recent? ceremony (at (- now 599999)) 600000)) "one millisecond inside the window is recent")
+    (is (false? (session/recent? ceremony (at (- now 600000)) 600000)) "the window's own length is not")
+    (doseq [[label session] [["no stamp — a session from before 0.13.0" (dissoc signed :ab/signed-in-at)]
+                             ["a stamp that is not a whole number"       (at "1789000123456")]
+                             ["a stamp that is a fraction"               (at (double now))]
+                             ["a stamp that is infinite"                 (at ##Inf)]
+                             ["no session at all"                         nil]]]
+      (is (false? (boolean (session/recent? ceremony session 600000))) (str "not recent: " label)))
+    (doseq [bad [0 -1 1.5 nil]]
+      (is (= {:within-ms bad} (ex-data (try (session/recent? ceremony signed bad) nil
+                                           (catch clojure.lang.ExceptionInfo e e))))
+          (str "a window that is not a positive whole number is refused: " (pr-str bad))))))
 
 (deftest end-deletes-the-session--and-ring-really-removes-the-row
   (let [{:keys [ceremony]} (fixture)
@@ -145,7 +174,7 @@
         "a revoked session is deleted, and `find` is the observation: a plain lookup
          cannot tell an explicit nil from an absent key")
     (let [response ((session/wrap-revoked login ceremony) {:session ada})]
-      (is (= {:ab/subject {:id 3} :ab/generation 0} (:session response))
+      (is (= {:ab/subject {:id 3} :ab/generation 0 :ab/signed-in-at now} (:session response))
           "a handler that logs somebody in over a revoked session keeps its own session —
            overwriting it would make logging back in impossible")
       (is (= {:recreate true} (meta (:session response)))

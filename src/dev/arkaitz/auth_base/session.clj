@@ -22,12 +22,29 @@
   something to survive the login — a chosen language, a page to return to —
   puts it on the response first and calls this last. The subject's current
   generation is read now and travels with the session: that number, compared on
-  each request, is how `revoke!` reaches a session no store can enumerate."
-  [ceremony response subject]
+  each request, is how `revoke!` reaches a session no store can enumerate.
+
+  `:ab/signed-in-at` is the ceremony's clock at this moment (since 0.13.0), what
+  `recent?` reads before a change to how the subject signs in (SPEC §18). Like the
+  subject, it is never carried over from the session before."
+  [{:keys [clock] :as ceremony} response subject]
   (let [session (merge (:session response)
-                       {:ab/subject    subject
-                        :ab/generation (ceremony/generation ceremony subject)})]
+                       {:ab/subject      subject
+                        :ab/generation   (ceremony/generation ceremony subject)
+                        :ab/signed-in-at (clock)})]
     (assoc response :session (vary-meta session assoc :recreate true))))
+
+(defn recent?
+  "Whether `session` was established less than `within-ms` ago by the ceremony's
+  clock (SPEC §18). A session with no stamp — one established before 0.13.0, or by
+  anything but `establish` — is not recent: whoever holds it signs in again. Says
+  nothing about whether the session is live; `subject-fn` says that."
+  [{:keys [clock]} session within-ms]
+  (when-not (pos-int? within-ms)
+    (throw (ex-info "auth-base: recent? needs a positive whole number of milliseconds"
+                    {:within-ms within-ms})))
+  (let [stamp (:ab/signed-in-at session)]
+    (and (int? stamp) (< (- (clock) stamp) within-ms))))
 
 (defn end
   "`response` with the session deleted — the logout. Ring reads a nil `:session`

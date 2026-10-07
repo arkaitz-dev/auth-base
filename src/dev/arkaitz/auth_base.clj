@@ -98,6 +98,11 @@
   "`(end response)` → the response with the session deleted."
   session/end)
 
+(def recent?
+  "`(recent? ceremony session within-ms)` → whether `session` signed in less than
+  `within-ms` ago, by the ceremony's clock; a session with no stamp is not recent."
+  session/recent?)
+
 (def wrap-revoked
   "`(wrap-revoked handler ceremony)` → optional middleware that also throws
   away a cookie whose session has been revoked. Handler first, so it threads
