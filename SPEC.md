@@ -681,7 +681,19 @@ decided on 2026-10-03.
   every session from before this version signs in again before changing addresses.
 - **Removal** detaches first, then drops the address's pending links: once the row is
   gone no sign-in for that address reaches this subject, and a link left over registers
-  at most a new, empty account, as any unknown address does.
+  at most a new, empty account, as any unknown address does. The revocation follows
+  whatever the drop did — a retry finds nothing left to detach — and the browser that
+  asked is re-established at the generation that revocation moved to, never the latest,
+  so a "sign out everywhere" landing in between ends it too. **The primary is told of a
+  removal as of an attach** (added 2026-10-07 by the ceremony's panel, the same reason
+  extended): a stolen session could otherwise remove the owner's other way in unseen.
+- **What the ceremony leaves to the handlers**, which they must not forget: the subject
+  passed to the attach acts is the one `subject-fn` answers — the live session's, never
+  a session's stored `:ab/subject` unchecked; both ends ask `recent?`; the issuing POST
+  goes through the source-keyed limit, and every POST through the host's CSRF; and the
+  page that confirms an attach link names the account it adds the address to, so a
+  person tricked into signing in as somebody else does not hand that account their
+  address.
 - **A rolling deploy.** An account a 0.12 instance registers after migration 009 ran
   has no `account_identifier` row until it signs in again, when `register!` copies it
   across; meanwhile `identifiers-of` reads its primary from `account`, so revocation

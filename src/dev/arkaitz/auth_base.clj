@@ -70,6 +70,23 @@
   at its next request."
   ceremony/revoke!)
 
+(def issue-attach!
+  "`(issue-attach! ceremony subject identifier request)` → nil: an attach link for
+  `identifier`, sent through `:notify!` whoever holds the address (SPEC §18)."
+  ceremony/issue-attach!)
+
+(def redeem-attach!
+  "`(redeem-attach! ceremony subject token request)` → `:attached`, `:taken`, or nil
+  when there is no live link for that subject."
+  ceremony/redeem-attach!)
+
+(def detach!
+  "`(detach! ceremony subject identifier request)` → the generation the subject moved
+  to, or nil when nothing was removed — never the primary. A removal revokes the
+  subject and tells the primary; `re-establish` at that generation keeps the asking
+  browser."
+  ceremony/detach!)
+
 (def subject-of
   "`(subject-of ceremony identifier)` → the subject behind an identifier: the
   store's record, or a bootstrap identity when there is none (SPEC §12)."
@@ -97,6 +114,11 @@
 (def end
   "`(end response)` → the response with the session deleted."
   session/end)
+
+(def re-establish
+  "`(re-establish response session generation)` → the response carrying `session` at
+  `generation`, rotated, its sign-in stamp untouched."
+  session/re-establish)
 
 (def recent?
   "`(recent? ceremony session within-ms)` → whether `session` signed in less than

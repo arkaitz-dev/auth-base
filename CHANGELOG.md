@@ -22,6 +22,11 @@ the README says "since" beside the behaviour. Every release is on Clojars as
   rows in one transaction, and copies across an account an earlier version registered
   during a rolling deploy. `reclaim-expired!` reclaims attach links too. `ddl` gains the
   five statements; a copy of it in another tool gains them in order.
+- The attach ceremony (SPEC §18): `auth/issue-attach!`, `auth/redeem-attach!`,
+  `auth/detach!` and `auth/re-establish`. Two new keys of the ceremony, both needed
+  only to attach: `:notify!` `(fn [identifier message request])`, which sends the attach
+  link and the notices to the primary, and `:link :attach-path`. `revoke!` drops the
+  subject's attach links too.
 
 ## 0.12.0 — 2026-10-06
 

@@ -28,7 +28,7 @@
 (def ^:private default-ttl-ms (* 15 60 1000))
 
 (def ^:private ceremony-keys
-  #{:store :deliver! :deliver-with-request! :link :ttl-ms :clock :bootstrap :normalise :on-unknown})
+  #{:store :deliver! :deliver-with-request! :notify! :link :ttl-ms :clock :bootstrap :normalise :on-unknown})
 
 (defn- fail! [message config-key value]
   (throw (ex-info (str "auth-base ceremony: " message)
@@ -38,7 +38,7 @@
   "The link is composed here from the two strings the host owns — its origin
   and where it mounted the redemption path — rather than from a function it
   passes, so there is one source of truth for both the link and the route."
-  [{:keys [base-url redeem-path] :as link}]
+  [{:keys [base-url redeem-path attach-path] :as link}]
   (when-not (map? link)
     (fail! ":link must be {:base-url \"https://host\" :redeem-path \"/path\"}" [:link] link))
   (when-not (and (string? base-url) (re-matches #"https?://[^/\s]+" base-url))
@@ -47,6 +47,9 @@
   (when-not (and (string? redeem-path) (re-matches #"/[^\s?#]*[^/\s?#]" redeem-path))
     (fail! ":link :redeem-path must start with \"/\" and not end with one"
            [:link :redeem-path] redeem-path))
+  (when-not (or (nil? attach-path) (and (string? attach-path) (re-matches #"/[^\s?#]*[^/\s?#]" attach-path)))
+    (fail! ":link :attach-path must start with \"/\" and not end with one"
+           [:link :attach-path] attach-path))
   link)
 
 (defn- normalise-default
@@ -81,7 +84,13 @@
                 for the link, so the message can speak its language (`:wb/locale`,
                 `:wb/tr` under web-base). Exactly one of the two; `request` is nil
                 when `issue!` is called outside a request
-    :link       {:base-url \"https://host\" :redeem-path \"/entrar\"} (required)
+    :notify!    (fn [identifier message request]) — the two messages a second
+                identifier sends (SPEC §18): `{:ab/kind :attach-link :ab/link url}` to
+                the address being attached, and `{:ab/kind :attached :ab/identifier id}`
+                to the primary once it is. Needed only to attach; `auth-web/mail`
+                writes both
+    :link       {:base-url \"https://host\" :redeem-path \"/entrar\"} (required), and
+                `:attach-path`, where attach links are confirmed, to attach
     :ttl-ms     how long a challenge lives (default 15 minutes)
     :clock      (fn []) → epoch milliseconds (default the system clock)
     :bootstrap  identifiers that hold no record and may still enter (SPEC §12)
@@ -91,7 +100,7 @@
                 redemption by someone it has no record of. Absent, there is no
                 such answer and the redemption fails, which is what every host
                 before the first one that asked for this key wanted."
-  [{:keys [store deliver! deliver-with-request! link ttl-ms clock bootstrap normalise on-unknown] :as config}]
+  [{:keys [store deliver! deliver-with-request! notify! link ttl-ms clock bootstrap normalise on-unknown] :as config}]
   ;; A key nobody reads is worse than a key nobody wrote: it is configuration
   ;; the host believes is in force. `:rate-limit` belongs to the handlers, and
   ;; passing it here silently bought nothing at all until this refused it.
@@ -114,6 +123,8 @@
              [:deliver-with-request!] deliver-with-request!))
     (when-not (ifn? deliver!)
       (fail! ":deliver! must be a function of [identifier link]" [:deliver!] deliver!)))
+  (when-not (or (nil? notify!) (ifn? notify!))
+    (fail! ":notify! must be a function of [identifier message request]" [:notify!] notify!))
   (check-link! link)
   (when-not (or (nil? ttl-ms) (pos-int? ttl-ms))
     (fail! ":ttl-ms must be a positive number of milliseconds" [:ttl-ms] ttl-ms))
@@ -128,6 +139,7 @@
   (let [normalise (or normalise normalise-default)]
     {:store      store
      :deliver!   (or deliver-with-request! (fn [identifier link _request] (deliver! identifier link)))
+     :notify!    notify!
      :link       link
      :ttl-ms     (or ttl-ms default-ttl-ms)
      :clock      (or clock #(System/currentTimeMillis))
@@ -146,6 +158,35 @@
 (defn- link-for [{:keys [base-url redeem-path]} token]
   (str base-url redeem-path "/" token))
 
+(defn- check-shape!
+  "Refuses an identifier by its shape, never its value, asking the store nothing:
+  `issue!`'s and `issue-attach!`'s first act. `act` names the caller in the message."
+  [act identifier]
+  ;; Refused before anything is minted, stored or delivered (decided with the
+  ;; user 2026-09-22, when `:on-unknown` first made this value reach a host
+  ;; function whose job is to create accounts). The three shapes a real form
+  ;; produces: an absent field arrives as nil, a repeated one as a vector, and
+  ;; an empty one as "". The default `normalise` puts the first two through
+  ;; `str` and leaves the third alone, so without this a host stores a challenge
+  ;; keyed on nil, on the printed spelling of two addresses at once, or on the
+  ;; empty string, hands `deliver!` the same, and is then asked to make an
+  ;; account of it. It refuses the SHAPE and never the value — no store is
+  ;; consulted and no branch here depends on whether an address is known, so
+  ;; §11 is untouched.
+  (when-not (and (string? identifier) (not (str/blank? identifier)))
+    (throw (ex-info (str "auth-base: " act " takes an identifier that is a non-blank string")
+                    ;; The type and not the value: what a caller mis-wired may
+                    ;; be a whole request map.
+                    {:identifier-type (some-> identifier class .getName)})))
+  ;; A control character — a line break above all — is no part of any address, and in
+  ;; one it reaches a host's mailer as a header it did not write, and its log as a line
+  ;; it did not write. A fact about the shape again, asking the store nothing.
+  ;; Every control character, C1 included (`\p{Cntrl}` is ASCII's alone), and the two
+  ;; Unicode separators: no header breaks on those, but a log viewer does, and the
+  ;; domain of an address is what a failed delivery logs.
+  (when (re-find #"[\p{Cc}\u2028\u2029]" identifier)
+    (throw (ex-info (str "auth-base: " act " takes an identifier with no control characters") {}))))
+
 (defn issue!
   "Records a challenge for `identifier`, a string, and hands the link to
   `deliver!`.
@@ -160,30 +201,7 @@
   that asked for the link."
   ([ceremony identifier] (issue! ceremony identifier nil))
   ([{:keys [store deliver! link ttl-ms clock normalise]} identifier request]
-  ;; Refused before anything is minted, stored or delivered (decided with the
-  ;; user 2026-09-22, when `:on-unknown` first made this value reach a host
-  ;; function whose job is to create accounts). The three shapes a real form
-  ;; produces: an absent field arrives as nil, a repeated one as a vector, and
-  ;; an empty one as "". The default `normalise` puts the first two through
-  ;; `str` and leaves the third alone, so without this a host stores a challenge
-  ;; keyed on nil, on the printed spelling of two addresses at once, or on the
-  ;; empty string, hands `deliver!` the same, and is then asked to make an
-  ;; account of it. It refuses the SHAPE and never the value — no store is
-  ;; consulted and no branch here depends on whether an address is known, so
-  ;; §11 is untouched.
-  (when-not (and (string? identifier) (not (str/blank? identifier)))
-    (throw (ex-info "auth-base: issue! takes an identifier that is a non-blank string"
-                    ;; The type and not the value: what a caller mis-wired may
-                    ;; be a whole request map.
-                    {:identifier-type (some-> identifier class .getName)})))
-  ;; A control character — a line break above all — is no part of any address, and in
-  ;; one it reaches a host's mailer as a header it did not write, and its log as a line
-  ;; it did not write. A fact about the shape again, asking the store nothing.
-  ;; Every control character, C1 included (`\p{Cntrl}` is ASCII's alone), and the two
-  ;; Unicode separators: no header breaks on those, but a log viewer does, and the
-  ;; domain of an address is what a failed delivery logs.
-  (when (re-find #"[\p{Cc}\u2028\u2029]" identifier)
-    (throw (ex-info "auth-base: issue! takes an identifier with no control characters" {})))
+  (check-shape! "issue!" identifier)
   (let [identifier (normalise identifier)
         token      (token/mint)]
     (store/put-challenge! store token identifier (instant/later (clock) ttl-ms))
@@ -198,6 +216,9 @@
       (catch Exception e
         (log/warn e (str "auth-base: delivery failed for " (domain-of identifier)))))
     nil)))
+
+(defn- bootstrap? [subject]
+  (boolean (and (map? subject) (:ab/bootstrap? subject))))
 
 (defn subject-of
   "The subject behind an identifier: the store's record, or — **only when there
@@ -272,6 +293,8 @@
   [{:keys [store]} subject]
   (store/generation store subject))
 
+(declare revoke-to!)
+
 (defn revoke!
   "Ends the subject's access everywhere (SPEC §10). Every session of theirs
   carries the generation it was born with and dies at its next request; there
@@ -283,15 +306,128 @@
   has no record to ask about. A link that survived would sign in after the
   revocation, which after a recovered mailbox is its intruder's way back. Dropped *before* the generation moves, so a
   redemption that starts in between finds no link, where the other order would let
-  one born after the move keep the new generation; and the move is in a `finally`,
-  so a store that fails to drop still ends every session before the failure
-  reaches the caller."
+  one born after the move keep the new generation; and the move happens whether or
+  not the drops did, so a store that fails to drop still ends every session before the
+  failure reaches the caller."
+  [ceremony subject]
+  (revoke-to! ceremony subject)
+  nil)
+
+(defn- revoke-to!
+  "`revoke!`, answering the generation the subject moved to."
   [{:keys [store normalise]} subject]
   (try
-    (store/drop-challenges! store (distinct (map normalise (if (and (map? subject) (:ab/bootstrap? subject))
+    (store/drop-challenges! store (distinct (map normalise (if (bootstrap? subject)
                                                              ;; No record, by definition: the store is not
                                                              ;; asked about a key it never holds.
                                                              [(:ab/identifier subject)]
                                                              (store/identifiers-of store subject)))))
-    (finally (store/bump-generation! store subject)))
-  nil)
+    ;; Its attach links too (SPEC §18). The generation they carry dies with the move
+    ;; below anyway; dropping them first is the same order, and the disk.
+    (when (and (satisfies? store/Identifiers store) (not (bootstrap? subject)))
+      (store/drop-attach-challenges! store subject))
+    ;; Moved on both paths, once — what a `finally` did, but answering the generation,
+    ;; which a `finally` cannot.
+    (catch Throwable t
+      (store/bump-generation! store subject)
+      (throw t)))
+  (store/bump-generation! store subject))
+
+;; --- a second identifier (SPEC §18) --------------------------------------------------
+
+(defn- attaching!
+  "The ceremony's store, refused unless it can attach: what `issue-attach!`,
+  `redeem-attach!` and `detach!` need, named by the key a host sets."
+  [{:keys [store notify! link]}]
+  (when-not (satisfies? store/Identifiers store)
+    (fail! ":store must implement dev.arkaitz.auth-base.store/Identifiers to attach an identifier"
+           [:store] (type store)))
+  (when-not (ifn? notify!)
+    (fail! ":notify! is needed to attach an identifier: it sends the link and the notice" [:notify!] nil))
+  (when-not (:attach-path link)
+    (fail! ":link :attach-path is needed to attach an identifier: it is where its link points" [:link :attach-path] nil))
+  store)
+
+(defn- notify-safely!
+  "`notify!`, with a failure logged by the address's domain and never thrown: a
+  message that did not leave is a fact about transport (SPEC §8)."
+  [notify! identifier message request]
+  (try
+    (notify! identifier message request)
+    (catch Exception e
+      (log/warn e (str "auth-base: delivery failed for " (domain-of identifier))))))
+
+(defn issue-attach!
+  "Records an attach link for `identifier` on behalf of `subject`, an account's — the
+  live, recently signed-in subject; the handlers check both — and hands it to
+  `notify!`. Returns nil, always.
+
+  **It never asks whether the address is known**, for the reason `issue!` never does
+  (SPEC §11, §18): a branch on it would time out who holds which address. An address
+  that belongs to somebody is sent the link like any other, and the redemption, where
+  the store's key decides, says it could not be added. The link is bound to the subject
+  and to its generation now, so a revocation kills it."
+  [{:keys [clock ttl-ms normalise notify! link] :as ceremony} subject identifier request]
+  (let [store (attaching! ceremony)]
+    (when (or (nil? subject) (bootstrap? subject))
+      (throw (ex-info "auth-base: issue-attach! needs an account's subject; a bootstrap identity has none to attach to" {})))
+    (check-shape! "issue-attach!" identifier)
+    (let [identifier (normalise identifier)
+          token      (token/mint)]
+      (store/put-attach-challenge! store token subject (store/generation store subject) identifier
+                                   (instant/later (clock) ttl-ms))
+      (notify-safely! notify! identifier
+                      {:ab/kind :attach-link :ab/link (str (:base-url link) (:attach-path link) "/" token)}
+                      request)
+      nil)))
+
+(defn redeem-attach!
+  "Spends an attach link for `subject` — the live session's — and answers `:attached`
+  when the address is now theirs, `:taken` when it belongs to another subject, and nil
+  when there is no live link: malformed, issued for somebody else or before a
+  revocation (neither spent), already used, or expired (spent).
+
+  Attaching tells the primary, unless that is the address itself (SPEC §18): an address
+  survives \"sign out everywhere\", so one planted by a stolen session would otherwise be
+  a way back in that nobody sees."
+  [{:keys [clock notify!] :as ceremony} subject token request]
+  (let [store (attaching! ceremony)]
+    ;; No link is ever issued for a bootstrap identity or for nobody, so the store finds
+    ;; none for either: the take is the whole check.
+    (when (token/well-formed? token)
+      (when-let [row (store/take-attach-challenge! store token subject (store/generation store subject))]
+        (when (< (clock) (:ab/expires-at row))
+          (let [identifier (:ab/identifier row)]
+            (if (store/attach-identifier! store subject identifier)
+              (let [primary (store/primary-of store subject)]
+                (when (and primary (not= primary identifier))
+                  (notify-safely! notify! primary {:ab/kind :attached :ab/identifier identifier} request))
+                :attached)
+              :taken)))))))
+
+(defn detach!
+  "Removes `identifier` from `subject`'s and answers the generation the subject moved
+  to, or nil when nothing was removed; the primary never is. A removal drops that
+  address's pending sign-in links, revokes the subject — an address is removed because
+  its mailbox was lost, and the sessions opened through it are the subject's — and
+  tells the primary (SPEC §18). The handler re-establishes the session that asked at
+  that generation, keeping when it signed in."
+  [{:keys [normalise notify!] :as ceremony} subject identifier request]
+  (let [store (attaching! ceremony)]
+    (when (and (some? subject) (not (bootstrap? subject)) (string? identifier))
+      (let [identifier (normalise identifier)]
+        (when (store/detach-identifier! store subject identifier)
+          ;; Detached first: from here no sign-in for it reaches this subject, so a
+          ;; link left over registers at most a new, empty account. The revocation is in
+          ;; a `finally`: once the address is gone a retry finds nothing to detach, so a
+          ;; drop that failed must not leave the other sessions alive for good.
+          ;; The notice follows whatever the drop and the revocation did: the address is
+          ;; gone, and the primary hears of it even when the removal then failed.
+          (let [moved (volatile! nil)]
+            (try (store/drop-challenges! store [identifier])
+                 (finally
+                   (try (vreset! moved (revoke-to! ceremony subject))
+                        (finally
+                          (when-let [primary (store/primary-of store subject)]
+                            (notify-safely! notify! primary {:ab/kind :detached :ab/identifier identifier} request))))))
+            @moved))))))

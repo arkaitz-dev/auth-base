@@ -692,7 +692,7 @@
     (link! f "ada@x.test")
     (reset! log [])
     (ceremony/revoke! ceremony {:id 1})
-    (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:bump-generation! {:id 1}]] @log)
+    (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:drop-attach-challenges! {:id 1}] [:bump-generation! {:id 1}]] @log)
         "an identifier the store holds as it was typed is dropped in the ceremony's normal form, the one challenges are stored in")
     (is (= #{} (rows f)) "so its link is gone")))
 
@@ -722,7 +722,7 @@
     (link! f "ada@x.test")
     (reset! log [])
     (ceremony/revoke! ceremony {:id 1})
-    (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:bump-generation! {:id 1}]] @log)
+    (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:drop-attach-challenges! {:id 1}] [:bump-generation! {:id 1}]] @log)
         "asked who, dropped the links, then moved the generation: once each, in that order"))
   (let [{:keys [ceremony log] :as f} (fixture {:subjects {"ada@x.test" {:id 1}} :forbid #{:drop-challenges!}})
         l (link! f "ada@x.test")]

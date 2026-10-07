@@ -302,7 +302,7 @@
         revoking (fn [_] (ceremony/revoke! ceremony {:id 1}) {:status 200 :headers {} :body "x"})]
     (reset! log [])
     (let [r ((session/wrap-revoked revoking ceremony) {:session ada})]
-      (is (= [:generation :identifiers-of :drop-challenges! :bump-generation!] (abt/calls log))
+      (is (= [:generation :identifiers-of :drop-challenges! :drop-attach-challenges! :bump-generation!] (abt/calls log))
           "witness: the session was judged live first, and the handler revoked it after")
       (is (false? (contains? r :session))
           "so the response that revoked it leaves it alone: the question was asked of the request as it arrived"))

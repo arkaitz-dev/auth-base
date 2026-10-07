@@ -34,6 +34,16 @@
                         :ab/signed-in-at (clock)})]
     (assoc response :session (vary-meta session assoc :recreate true))))
 
+(defn re-establish
+  "`response` carrying `session` again at `generation`, marked for rotation — after the
+  subject's own act revoked it, as removing an identifier does (SPEC §18), so the
+  browser that acted stays signed in and every other session ends. `generation` is the
+  one that act moved to, never the store's latest: a \"sign out everywhere\" that lands
+  in between must end this session too. Everything else is kept, `:ab/signed-in-at`
+  above all: a fresh stamp here would let attaching and removing renew recency for ever."
+  [response session generation]
+  (assoc response :session (vary-meta (assoc session :ab/generation generation) assoc :recreate true)))
+
 (defn recent?
   "Whether `session` was established less than `within-ms` ago by the ceremony's
   clock (SPEC §18). A session with no stamp — one established before 0.13.0, or by
