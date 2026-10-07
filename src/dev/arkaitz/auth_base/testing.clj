@@ -91,7 +91,30 @@
          (store/identifiers-of inner subject))
        (drop-challenges! [_ identifiers]
          (note! [:drop-challenges! identifiers])
-         (store/drop-challenges! inner identifiers))))))
+         (store/drop-challenges! inner identifiers))
+
+       ;; Forwarded whatever `inner` is: one that does not implement it throws at the
+       ;; first call, naming the protocol, rather than the wrapper hiding the method.
+       store/Identifiers
+       (attach-identifier! [_ subject identifier]
+         (note! [:attach-identifier! subject identifier])
+         (store/attach-identifier! inner subject identifier))
+       (detach-identifier! [_ subject identifier]
+         (note! [:detach-identifier! subject identifier])
+         (store/detach-identifier! inner subject identifier))
+       (primary-of [_ subject]
+         (note! [:primary-of subject])
+         (store/primary-of inner subject))
+       (put-attach-challenge! [this token subject generation identifier expires-at]
+         (note! [:put-attach-challenge! token subject generation identifier expires-at])
+         (store/put-attach-challenge! inner token subject generation identifier expires-at)
+         this)
+       (take-attach-challenge! [_ token subject generation]
+         (note! [:take-attach-challenge! token subject generation])
+         (store/take-attach-challenge! inner token subject generation))
+       (drop-attach-challenges! [_ subject]
+         (note! [:drop-attach-challenges! subject])
+         (store/drop-attach-challenges! inner subject))))))
 
 (defn calls
   "The method names in `log`, in order."

@@ -13,6 +13,15 @@ the README says "since" beside the behaviour. Every release is on Clojars as
   within-ms)`. A change to how a subject signs in asks for a recent sign-in (SPEC §18).
   A session from an earlier version has no stamp and is not recent, so its holder signs
   in again before such a change. Nothing else about a session changes.
+- `store/Identifiers`, a third protocol (SPEC §18): attaching and detaching a subject's
+  identifiers, its primary, and attach links. The in-memory store and `auth-jdbc/store`
+  implement it; a store of your own needs it only for the attach ceremony.
+- `auth-jdbc`: migrations 007-011. `account_identifier` holds every identifier, the
+  primary included, backfilled from `account`, and `identifier_challenge` holds attach
+  links. `subject-for` and `identifiers-of` read the new table. `register!` writes both
+  rows in one transaction, and copies across an account an earlier version registered
+  during a rolling deploy. `reclaim-expired!` reclaims attach links too. `ddl` gains the
+  five statements; a copy of it in another tool gains them in order.
 
 ## 0.12.0 — 2026-10-06
 

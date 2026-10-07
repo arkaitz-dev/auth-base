@@ -682,7 +682,17 @@ decided on 2026-10-03.
 - **Removal** detaches first, then drops the address's pending links: once the row is
   gone no sign-in for that address reaches this subject, and a link left over registers
   at most a new, empty account, as any unknown address does.
-- A **bootstrap identity** (§12) has no record and cannot attach.
+- **A rolling deploy.** An account a 0.12 instance registers after migration 009 ran
+  has no `account_identifier` row until it signs in again, when `register!` copies it
+  across; meanwhile `identifiers-of` reads its primary from `account`, so revocation
+  still drops its links. One case stays wrong until then, and needs that address's
+  mailbox in the deploy window: if a subject of the new version had already attached
+  the address, the new version signs it in as that subject, and the old account is
+  orphaned — a revocation of the old account still drops that address's links, which
+  over-revokes and never under-revokes.
+- A **bootstrap identity** (§12) has no record and cannot attach. The JDBC store refuses
+  it by class; the in-memory store does not know accounts, so the ceremony refuses it
+  before asking either.
 - Issuing an attach link goes through the same source-keyed limit as signing in: a
   signed-in person must not be able to mail any address at will.
 

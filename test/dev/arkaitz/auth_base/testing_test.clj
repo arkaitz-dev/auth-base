@@ -76,6 +76,28 @@
         "and every call, the forbidden one included, is in the log in order")
     (is (= 0 (store/generation inner {:id 1})) "the forbidden call never reached the store")))
 
+(deftest recording-forwards-the-identifiers-protocol-and-logs-each-call
+  (let [log   (atom [])
+        inner (store/in-memory {:subjects {"ada@x.test" :s} :clock (constantly 0)})
+        st    (abt/recording inner log)]
+    (is (= [true "ada@x.test" true] [(store/attach-identifier! st :s "bob@x.test") (store/primary-of st :s)
+                                     (store/detach-identifier! st :s "bob@x.test")])
+        "each answer is the inner store's")
+    (is (nil? (store/subject-for inner "bob@x.test")) "and the detach reached it as a detach")
+    (is (identical? st (store/put-attach-challenge! st "A" :s 7 "bob@x.test" 9)) "put answers the wrapper, as put-challenge! does")
+    (store/put-attach-challenge! st "B" :s 7 "eve@x.test" 9)
+    (store/put-attach-challenge! inner "C" :t 7 "dan@x.test" 9)
+    (is (= [{:ab/identifier "bob@x.test" :ab/expires-at 9} 1]
+           [(store/take-attach-challenge! st "A" :s 7) (store/drop-attach-challenges! st :s)])
+        "the link reached the inner store and came back, and the drop removed this subject's other one")
+    (is (= {:ab/identifier "dan@x.test" :ab/expires-at 9} (store/take-attach-challenge! inner "C" :t 7))
+        "and no other subject's")
+    (is (= [[:attach-identifier! :s "bob@x.test"] [:primary-of :s] [:detach-identifier! :s "bob@x.test"]
+            [:put-attach-challenge! "A" :s 7 "bob@x.test" 9] [:put-attach-challenge! "B" :s 7 "eve@x.test" 9]
+            [:take-attach-challenge! "A" :s 7] [:drop-attach-challenges! :s]]
+           @log)
+        "and every call is in the log with its arguments, in order")))
+
 ;; --- the walk, against a real host ---------------------------------------------------
 
 (defn- host

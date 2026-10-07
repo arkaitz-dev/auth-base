@@ -36,7 +36,7 @@
         files (into (shipped "dev/arkaitz/auth_base/public") (shipped "dev/arkaitz/auth_base/migrations"))
         hit?  (fn [path] (some #(re-matches (glob->regex %) path) gs))]
     (is (seq gs) (str "the metadata is on the classpath at " metadata-path))
-    (is (= 7 (count files)) (str "witness: the stylesheet and six migrations are read from resources/: " files))
+    (is (= 12 (count files)) (str "witness: the stylesheet and eleven migrations are read from resources/: " files))
     (is (= [] (remove hit? files)) "every one of them is matched by a glob")
     (is (hit? "dev/arkaitz/auth_base/migrations")
         "and the migration directory itself, which db-base lists to find them")

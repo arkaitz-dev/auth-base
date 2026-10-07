@@ -39,8 +39,10 @@
            [javax.sql DataSource]))
 
 (def ddl
-  "The three tables, the index a revocation reads them by, and the shared rate limit's
-  table with the index its reclaim reads it by, as one statement each —
+  "The three tables, the index a revocation reads them by, the shared rate limit's
+  table with the index its reclaim reads it by, and the second identifier's (SPEC §18):
+  every identifier with the index by subject and the backfill of the primaries, and the
+  attach links with theirs — as one statement each —
   the statements of the migration files this library ships, in their order, which a test
   holds them to. Names are fixed: the host's tables refer to `account(subject)` by
   foreign key."
@@ -49,7 +51,12 @@
    "CREATE TABLE login_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL)"
    "CREATE INDEX login_challenge_identifier ON login_challenge (identifier)"
    "CREATE TABLE login_attempt (source VARCHAR(64) NOT NULL PRIMARY KEY, attempts BIGINT NOT NULL, expires_at BIGINT NOT NULL)"
-   "CREATE INDEX login_attempt_expires_at ON login_attempt (expires_at)"])
+   "CREATE INDEX login_attempt_expires_at ON login_attempt (expires_at)"
+   "CREATE TABLE account_identifier (identifier VARCHAR(320) NOT NULL PRIMARY KEY, subject VARCHAR(36) NOT NULL, created_at BIGINT NOT NULL)"
+   "CREATE INDEX account_identifier_subject ON account_identifier (subject)"
+   "INSERT INTO account_identifier (identifier, subject, created_at) SELECT identifier, subject, created_at FROM account"
+   "CREATE TABLE identifier_challenge (token VARCHAR(43) NOT NULL PRIMARY KEY, subject VARCHAR(36) NOT NULL, generation BIGINT NOT NULL, identifier VARCHAR(320) NOT NULL, expires_at BIGINT NOT NULL)"
+   "CREATE INDEX identifier_challenge_subject ON identifier_challenge (subject)"])
 
 (def ^:private as-maps {:builder-fn rs/as-unqualified-lower-maps})
 
@@ -69,7 +76,7 @@
   ds)
 
 (defn check!
-  "Selects every column this namespace uses from each of its three tables, asking for
+  "Selects every column this namespace uses from each of its tables, asking for
   no rows, and returns `ds`. For the host's boot: a copied migration that lost or
   renamed a table or a column fails there, not at a login, as an `ex-info` naming the
   table and saying what to do, with the engine's refusal — which names the column — as
@@ -80,7 +87,9 @@
   (let [ds (datasource! ds)]
     (doseq [[table sql] [["account" "SELECT subject, identifier, created_at FROM account WHERE 1 = 0"]
                          ["account_generation" "SELECT subject, generation FROM account_generation WHERE 1 = 0"]
-                         ["login_challenge" "SELECT token, identifier, expires_at FROM login_challenge WHERE 1 = 0"]]]
+                         ["login_challenge" "SELECT token, identifier, expires_at FROM login_challenge WHERE 1 = 0"]
+                         ["account_identifier" "SELECT identifier, subject, created_at FROM account_identifier WHERE 1 = 0"]
+                         ["identifier_challenge" "SELECT token, subject, generation, identifier, expires_at FROM identifier_challenge WHERE 1 = 0"]]]
       (try (jdbc/execute! ds [sql])
            (catch SQLException e
              (throw (ex-info (str "auth-base jdbc: check! could not read table " table " as this version does —"
@@ -117,21 +126,42 @@
                     {:subject-type (some-> subject class .getName)}))))
 
 (defn subject-for
-  "The subject behind an identifier, or nil. It creates nothing, ever — the port says
-  so (auth-base SPEC §15)."
+  "The subject behind an identifier — the primary or one attached since — or nil. It
+  creates nothing, ever — the port says so (auth-base SPEC §15)."
   [ds identifier]
-  (:subject (one (datasource! ds) "SELECT subject FROM account WHERE identifier = ?" identifier)))
+  (:subject (one (datasource! ds) "SELECT subject FROM account_identifier WHERE identifier = ?" identifier)))
 
 (defn identifier-for
-  "The identifier an account was registered under, or nil."
+  "The identifier an account was registered under — its primary — or nil. An address
+  attached since is not it: a host that matches something by this matches the primary
+  alone (SPEC §18)."
   [ds subject]
   (:identifier (one (datasource! ds) "SELECT identifier FROM account WHERE subject = ?" (subject-key subject))))
 
+(defn- heal!
+  "An account a version before 0.13.0 registered after the backfill ran — a rolling
+  deploy — has its `account` row and no `account_identifier` one, so `subject-for`
+  cannot see it. Copies it across, and answers the subject `subject-for` then gives:
+  the primary key still decides, so an address attached elsewhere meanwhile stays
+  where it is. Nil when there is no such account."
+  [ds identifier]
+  (when-let [{:keys [subject created_at]} (one ds "SELECT subject, created_at FROM account WHERE identifier = ?" identifier)]
+    (try (one ds "INSERT INTO account_identifier (identifier, subject, created_at) VALUES (?, ?, ?)"
+              identifier subject created_at)
+         (catch SQLException e
+           ;; Refused by the key: somebody holds the address now, and the read below says who.
+           (when-not (subject-for ds identifier) (throw e))))
+    (subject-for ds identifier)))
+
 (defn register!
   "The subject for `identifier`, creating the account when there is none. Safe to call
-  concurrently for one identifier: the unique index decides, and a refused insert is
-  answered by reading the account that won. A refusal with no account there to read —
-  anything else the engine objected to — is rethrown as it came.
+  concurrently for one identifier: the primary key of `account_identifier` decides, and
+  a refused insert is answered by reading who holds the address. A refusal with nobody
+  there to read — anything else the engine objected to — is rethrown as it came.
+
+  Writes the account and its primary into `account_identifier` in one transaction
+  (since 0.13.0). An account an earlier version registered during a rolling deploy is
+  copied across rather than refused.
 
   Stores `identifier` **as given**: pass it through `auth/normalise` first, or it will
   not be the account the ceremony asks for. What it returns is what `subject-for`
@@ -141,13 +171,17 @@
   [ds identifier]
   (let [ds (datasource! ds)]
     (or (subject-for ds identifier)
-        (let [minted (str (random-uuid))]
+        (let [minted (str (random-uuid))
+              now    (System/currentTimeMillis)]
           (try
-            (one ds "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)"
-                 minted identifier (System/currentTimeMillis))
+            ;; The refusal is caught outside the transaction: on PostgreSQL a refused
+            ;; statement aborts it, and the read that settles the race needs a live one.
+            (jdbc/with-transaction [tx ds]
+              (one tx "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)" minted identifier now)
+              (one tx "INSERT INTO account_identifier (identifier, subject, created_at) VALUES (?, ?, ?)" identifier minted now))
             minted
             (catch SQLException e
-              (or (subject-for ds identifier) (throw e))))))))
+              (or (subject-for ds identifier) (heal! ds identifier) (throw e))))))))
 
 ;; --- revocation -------------------------------------------------------------------
 
@@ -193,6 +227,16 @@
 
 ;; --- the store --------------------------------------------------------------------
 
+(defn- attachable
+  "A subject an address can be attached to: an account's, the text `register!` minted.
+  A bootstrap identity has no account to attach to (SPEC §12, §18), and anything else
+  no statement here can find; both are refused by their class, never their value."
+  [subject]
+  (when-not (string? subject)
+    (throw (ex-info "auth-base jdbc: only an account's subject can have identifiers attached"
+                    {:subject-type (some-> subject class .getName)})))
+  subject)
+
 (defrecord JdbcStore [ds]
   store/Store
 
@@ -225,13 +269,67 @@
 
   store/Challenges
   (identifiers-of [_ subject]
-    (mapv :identifier (jdbc/execute! ds ["SELECT identifier FROM account WHERE subject = ? ORDER BY identifier" (subject-key subject)]
+    ;; The primary is read from `account` too: an account an earlier version registered
+    ;; during a rolling deploy has no `account_identifier` row until it signs in again,
+    ;; and revocation must still drop its links.
+    (mapv :identifier (jdbc/execute! ds [(str "SELECT identifier FROM account_identifier WHERE subject = ?"
+                                              " UNION SELECT identifier FROM account WHERE subject = ? ORDER BY identifier")
+                                         (subject-key subject) (subject-key subject)]
                                      as-maps)))
 
   ;; A DELETE per identifier, each deciding against a concurrent take the way
   ;; take-challenge!'s own DELETE does: whichever removes the row has it.
   (drop-challenges! [_ identifiers]
-    (reduce + 0 (map #(changed (one ds "DELETE FROM login_challenge WHERE identifier = ?" %)) (distinct identifiers)))))
+    (reduce + 0 (map #(changed (one ds "DELETE FROM login_challenge WHERE identifier = ?" %)) (distinct identifiers))))
+
+  store/Identifiers
+  ;; The primary key decides: an INSERT refused because the address is held is
+  ;; answered by reading who holds it, never by a read made before.
+  (attach-identifier! [_ subject identifier]
+    (let [subject (attachable subject)]
+      (try (one ds "INSERT INTO account_identifier (identifier, subject, created_at) VALUES (?, ?, ?)"
+                identifier subject (System/currentTimeMillis))
+           true
+           (catch SQLException e
+             (let [holder (subject-for ds identifier)]
+               (when (nil? holder) (throw e))
+               (= subject holder))))))
+
+  ;; One statement, so the primary cannot be removed between a check and a delete.
+  (detach-identifier! [_ subject identifier]
+    (let [subject (attachable subject)]
+      (= 1 (changed (one ds (str "DELETE FROM account_identifier WHERE identifier = ? AND subject = ?"
+                                 " AND identifier NOT IN (SELECT identifier FROM account WHERE subject = ?)")
+                         identifier subject subject)))))
+
+  (primary-of [_ subject]
+    (when (string? subject) (identifier-for ds subject)))
+
+  (put-attach-challenge! [this token subject generation identifier expires-at]
+    (when-not (number? expires-at)
+      (throw (ex-info "auth-base jdbc: a challenge's expiry must be a number of epoch milliseconds"
+                      {:expires-at expires-at :token-present? (some? token)})))
+    (one ds (str "INSERT INTO identifier_challenge (token, subject, generation, identifier, expires_at)"
+                 " VALUES (?, ?, ?, ?, ?)")
+         token (attachable subject) generation identifier expires-at)
+    this)
+
+  ;; The DELETE decides, keyed on all three: a token presented by another subject, or
+  ;; at another generation, removes nothing and is not spent.
+  (take-attach-challenge! [_ token subject generation]
+    (when (string? subject)
+      ;; The read only fetches what the DELETE will have decided about; it filters
+      ;; nothing, so the DELETE's own predicates are the whole of the check.
+      (when-let [row (one ds "SELECT identifier, expires_at FROM identifier_challenge WHERE token = ?" token)]
+        (when (= 1 (changed (one ds "DELETE FROM identifier_challenge WHERE token = ? AND subject = ? AND generation = ?"
+                                 token subject generation)))
+          {:ab/identifier (:identifier row)
+           :ab/expires-at (:expires_at row)}))))
+
+  (drop-attach-challenges! [_ subject]
+    (if (string? subject)
+      (changed (one ds "DELETE FROM identifier_challenge WHERE subject = ?" subject))
+      0)))
 
 (defn store
   "auth-base's `Store` over `ds`, a `javax.sql.DataSource` whose database has the three
@@ -266,7 +364,8 @@
     (when-not (integer? now)
       (throw (ex-info "auth-base jdbc: reclaim-expired! takes now as an integer of epoch milliseconds"
                       {:now now})))
-    (changed (one ds "DELETE FROM login_challenge WHERE expires_at <= ?" now))))
+    (+ (changed (one ds "DELETE FROM login_challenge WHERE expires_at <= ?" now))
+       (changed (one ds "DELETE FROM identifier_challenge WHERE expires_at <= ?" now)))))
 
 ;; --- a rate limit every instance shares ---------------------------------------------
 

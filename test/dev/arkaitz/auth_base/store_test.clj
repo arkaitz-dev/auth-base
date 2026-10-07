@@ -248,7 +248,7 @@
       (is (nil? r1) "an identifier the store does not know has no subject")
       (is (nil? r2) "and still has none when asked a second time")
       (is (= before after) "asking created nothing")
-      (is (= {:challenges {} :subjects {"known@x" :subj-1} :generations {}} after)
+      (is (= {:challenges {} :attach-challenges {} :subjects {"known@x" :subj-1} :attached #{} :generations {}} after)
           "and the state is exactly what it was seeded with"))))
 
 (deftest reading-creates-nothing--generation-and-a-miss-on-take
@@ -322,3 +322,58 @@
     (is (= [0 0] [(store/drop-challenges! st ["ada@x.test"]) (store/drop-challenges! st [])]) "nothing left is 0")
     (is (= 1 (store/drop-challenges! st ["bo@x.test"])) "one more")
     (is (= #{"t5"} (rows)) "and only the named one went")))
+
+;; --- a second identifier (SPEC §18) ------------------------------------------------------
+
+(deftest the-in-memory-store-attaches-and-detaches-as-the-port-says
+  (let [st (store/in-memory {:subjects {"ada@x" :s "carol@x" :t}})]
+    (is (= ["ada@x" ["ada@x"]] [(store/primary-of st :s) (store/identifiers-of st :s)]) "witness: a seeded primary")
+    (is (true? (store/attach-identifier! st :s "bob@x")) "a free address is attached")
+    (is (= [:s ["ada@x" "bob@x"] "ada@x"] [(store/subject-for st "bob@x") (store/identifiers-of st :s) (store/primary-of st :s)])
+        "it signs in as the subject, is listed, and the primary is unchanged")
+    (is (true? (store/attach-identifier! st :s "bob@x")) "again: true")
+    (is (false? (store/attach-identifier! st :t "bob@x")) "another subject cannot take it")
+    (is (false? (store/attach-identifier! st :t "ada@x")) "nor another's primary")
+    (is (= :s (store/subject-for st "bob@x")) "and both refusals changed nothing")
+    (is (false? (store/detach-identifier! st :s "ada@x")) "the primary is never detached")
+    (is (false? (store/detach-identifier! st :t "bob@x")) "nor another subject's address")
+    (is (true? (store/detach-identifier! st :s "bob@x")) "an attached address is detached")
+    (is (= [nil ["ada@x"]] [(store/subject-for st "bob@x") (store/identifiers-of st :s)]) "and signs in as nobody")
+    (is (false? (store/detach-identifier! st :s "bob@x")) "a second detach removes nothing")
+    (is (true? (store/attach-identifier! st :s "aaa@x")) "witness: an address that sorts before the primary")
+    (is (= "ada@x" (store/primary-of st :s)) "is still not the primary")))
+
+(deftest in-memory-attach-links-are-taken-only-by-their-subject-at-their-generation
+  (let [st (store/in-memory {:subjects {"ada@x" :s "carol@x" :t}})]
+    (store/put-attach-challenge! st "A1" :s 0 "bob@x" Long/MAX_VALUE)
+    (store/put-attach-challenge! st "A2" :t 0 "dan@x" Long/MAX_VALUE)
+    (is (nil? (store/take-challenge! st "A1")) "a sign-in cannot redeem an attach link")
+    (is (nil? (store/take-attach-challenge! st "A1" :t 0)) "nor another subject")
+    (is (nil? (store/take-attach-challenge! st "A1" :s 1)) "nor its subject at a later generation")
+    (is (= {:ab/identifier "bob@x" :ab/expires-at Long/MAX_VALUE} (store/take-attach-challenge! st "A1" :s 0))
+        "its subject at its generation takes it — so the three refusals above did not spend it")
+    (is (nil? (store/take-attach-challenge! st "A1" :s 0)) "once")
+    (is (= {:expires-at "soon" :token-present? true}
+           (ex-data (try (store/put-attach-challenge! st "A3" :s 0 "bob@x" "soon") nil (catch clojure.lang.ExceptionInfo e e))))
+        "a non-number expiry is refused")
+    (store/put-attach-challenge! st "A4" :s 0 "bob@x" Long/MAX_VALUE)
+    (is (= 1 (store/drop-attach-challenges! st :s)) "revocation's drop counts the subject's links")
+    (is (= {:ab/identifier "dan@x" :ab/expires-at Long/MAX_VALUE} (store/take-attach-challenge! st "A2" :t 0))
+        "and left another subject's")))
+
+(deftest in-memory-concurrent-attaches-of-one-address-give-it-to-exactly-one-subject
+  ;; An attach that read and then wrote gave two winners in about one round of 32 threads
+  ;; in ten (measured by the panel, 31 of 300); two hundred rounds miss it about once in
+  ;; a billion runs. Every round must hold, and a hang names itself before anything else.
+  (dotimes [round 200]
+    (let [st      (store/in-memory {})
+          start   (java.util.concurrent.CountDownLatch. 1)
+          results (doall (for [i (range 32)]
+                           (future (.await start) [i (store/attach-identifier! st i "x@x")])))]
+      (.countDown start)
+      (let [answers (mapv #(deref % 10000 ::hang) results)]
+        (when (is (not-any? #{::hang} answers) (str "round " round ": witness: every attach returned"))
+          (let [winners (keep (fn [[i yes?]] (when yes? i)) answers)]
+            (when-not (and (= 1 (count winners)) (= (first winners) (store/subject-for st "x@x")))
+              (is (= [1 (store/subject-for st "x@x")] [(count winners) (first winners)])
+                  (str "round " round ": exactly one subject was told yes, and it holds the address: " (vec winners))))))))))

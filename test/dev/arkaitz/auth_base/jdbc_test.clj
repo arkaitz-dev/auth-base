@@ -578,7 +578,9 @@
 
 (def ^:private migration-files
   ["001-accounts.up.sql" "002-generations.up.sql" "003-challenges.up.sql" "004-challenge-identifier.up.sql"
-   "005-login-attempts.up.sql" "006-login-attempt-expiry.up.sql"])
+   "005-login-attempts.up.sql" "006-login-attempt-expiry.up.sql"
+   "007-account-identifiers.up.sql" "008-account-identifier-subject.up.sql" "009-account-identifier-backfill.up.sql"
+   "010-identifier-challenges.up.sql" "011-identifier-challenge-subject.up.sql"])
 
 (defn- statement-of
   "The one statement a migration file holds: its lines less the `--` comments, joined."
@@ -595,7 +597,7 @@
   (let [dir   (io/file (io/resource "dev/arkaitz/auth_base/migrations"))
         found (sort (map #(.getName ^java.io.File %) (.listFiles dir)))]
     (is (= migration-files found)
-        "the prefix holds exactly the six, numbered in the order they must run — a new one is a new number")
+        "the prefix holds exactly the eleven, numbered in the order they must run — a new one is a new number")
     (is (= aj/ddl (mapv statement-of migration-files))
         "each file holds the ddl statement of its position, and nothing else, so the two cannot drift"))
   (on-engines (mapv statement-of migration-files)
@@ -792,7 +794,9 @@
        (is (= 0 (count-of ds "login_attempt")) (str engine ": witness: the proxy let no INSERT through"))))))
 
 (deftest a-database-without-the-table-or-a-malformed-option-is-refused-when-the-limit-is-built
-  (on-engines (subvec aj/ddl 0 4)
+  ;; Every table but the rate limit's: what a database migrated by everything except 005
+  ;; and 006 holds.
+  (on-engines (into (subvec aj/ddl 0 4) (subvec aj/ddl 6))
    (fn [engine ds]
      (let [e (try (aj/rate-limiter ds {:limit 2 :window-ms 1000}) nil (catch clojure.lang.ExceptionInfo e e))]
        (is (= ["auth-base jdbc: the rate limit could not read table login_attempt — migration 005 has not run"
@@ -832,3 +836,203 @@
    (fn [engine ds]
      (is (fn? (aj/rate-limiter ds {:limit 2 :window-ms 1000}))
          (str engine ": the five files, run in order, give the limit its table")))))
+
+;; --- 7 · a second identifier (SPEC §18) ---------------------------------------------------
+
+(def ^:private bob "bob@x.test")
+(def ^:private carol "carol@x.test")
+
+(defn- holders [ds] (vec (raw ds "SELECT identifier, subject FROM account_identifier ORDER BY identifier")))
+
+(deftest the-identifiers-port-holds-on-both-engines
+  (on-engines
+   (fn [engine ds]
+     (let [st (aj/store ds)
+           s  (aj/register! ds ada)
+           t  (aj/register! ds carol)]
+       (is (= [[ada s] [carol t]] (holders ds)) (str engine ": register! writes each primary into account_identifier"))
+       (is (= [s ada [ada]] [(store/subject-for st ada) (store/primary-of st s) (store/identifiers-of st s)])
+           (str engine ": witness: one subject, one identifier, its primary"))
+       (is (true? (store/attach-identifier! st s bob)) (str engine ": a free address is attached"))
+       (is (= [s [ada bob] ada] [(store/subject-for st bob) (store/identifiers-of st s) (store/primary-of st s)])
+           (str engine ": it signs in as the same subject, is listed beside the primary, and the primary is unchanged"))
+       (is (true? (store/attach-identifier! st s bob)) (str engine ": attaching it again answers true"))
+       (is (= 3 (count-of ds "account_identifier")) (str engine ": and writes nothing"))
+       (is (false? (store/attach-identifier! st t bob)) (str engine ": another subject's address cannot be taken"))
+       (is (false? (store/attach-identifier! st t ada)) (str engine ": nor another subject's primary"))
+       (is (= [[ada s] [bob s] [carol t]] (holders ds)) (str engine ": and both refusals changed nothing"))
+       (is (false? (store/detach-identifier! st s ada)) (str engine ": the primary is never detached"))
+       (is (false? (store/detach-identifier! st t bob)) (str engine ": nor another subject's address"))
+       (is (= [[ada s] [bob s] [carol t]] (holders ds)) (str engine ": and neither refusal removed a row"))
+       (is (true? (store/detach-identifier! st s bob)) (str engine ": an attached address is detached"))
+       (is (= [nil [ada]] [(store/subject-for st bob) (store/identifiers-of st s)]) (str engine ": and signs in as nobody"))
+       (is (false? (store/detach-identifier! st s bob)) (str engine ": a second detach removes nothing"))
+       (is (true? (store/attach-identifier! st s "aaa@x.test")) (str engine ": witness: an address that sorts before the primary"))
+       (is (= ada (store/primary-of st s)) (str engine ": is still not the primary"))
+       (is (false? (store/detach-identifier! st s ada)) (str engine ": and the primary is still the one never detached"))
+       (is (true? (store/detach-identifier! st s "aaa@x.test")) (str engine ": while the other is"))
+       (is (= [ada] (map first (raw ds (str "SELECT identifier FROM account WHERE subject = '" s "'"))))
+           (str engine ": the account row is untouched throughout"))
+       (let [bootstrap {:ab/bootstrap? true :ab/identifier "root@x.test"}]
+         (doseq [[label f] [["attach" #(store/attach-identifier! st bootstrap bob)]
+                            ["detach" #(store/detach-identifier! st bootstrap bob)]
+                            ["an attach link" #(store/put-attach-challenge! st "TB" bootstrap 0 bob 9999)]]]
+           (is (= {:subject-type "clojure.lang.PersistentArrayMap"}
+                  (ex-data (try (f) nil (catch clojure.lang.ExceptionInfo e e))))
+               (str engine ": a bootstrap identity has no account to attach to — " label " refused by class")))
+         (is (= [[ada s] [carol t]] (holders ds)) (str engine ": and nothing was written for it")))))))
+
+(deftest attach-links-are-taken-only-by-their-subject-at-their-generation--and-never-by-a-sign-in
+  (on-engines
+   (fn [engine ds]
+     (let [st (aj/store ds)
+           s  (aj/register! ds ada)
+           t  (aj/register! ds carol)]
+       (is (identical? st (store/put-attach-challenge! st "A1" s 0 bob 9999)) (str engine ": put answers the store"))
+       (store/put-attach-challenge! st "A2" t 0 "dan@x.test" 9999)
+       (is (nil? (store/take-challenge! st "A1")) (str engine ": a sign-in cannot redeem an attach link"))
+       (is (nil? (store/take-attach-challenge! st "A1" t 0)) (str engine ": nor another subject"))
+       (is (nil? (store/take-attach-challenge! st "A1" s 1)) (str engine ": nor its subject at a later generation"))
+       (is (= 2 (count-of ds "identifier_challenge")) (str engine ": and none of the three spent it"))
+       (is (= {:ab/identifier bob :ab/expires-at 9999} (store/take-attach-challenge! st "A1" s 0))
+           (str engine ": its subject at its generation takes it"))
+       (is (nil? (store/take-attach-challenge! st "A1" s 0)) (str engine ": once"))
+       (is (nil? (store/take-attach-challenge! st "never" s 0)) (str engine ": an unknown token is nil"))
+       (let [e (try (store/put-attach-challenge! st "A3" s 0 bob "soon") nil (catch clojure.lang.ExceptionInfo e e))]
+         (is (= {:expires-at "soon" :token-present? true} (ex-data e)) (str engine ": a non-number expiry is refused"))
+         (is (= 1 (count-of ds "identifier_challenge")) (str engine ": before anything was written")))
+       (store/put-attach-challenge! st "A4" s 0 bob 9999)
+       (store/put-attach-challenge! st "A5" s 0 "eve@x.test" 9999)
+       (is (= 2 (store/drop-attach-challenges! st s)) (str engine ": revocation's drop counts the subject's links"))
+       (is (= [["A2"]] (raw ds "SELECT token FROM identifier_challenge")) (str engine ": and leaves another subject's"))
+       (is (= 0 (store/drop-attach-challenges! st {:ab/bootstrap? true :ab/identifier "root@x.test"}))
+           (str engine ": a bootstrap identity has none to drop"))
+       (store/put-attach-challenge! st "OLD" s 0 bob 100)
+       (plant! ds "INSERT INTO login_challenge (token, identifier, expires_at) VALUES (?, ?, ?)" "L" ada 100)
+       (is (= 2 (aj/reclaim-expired! ds 100)) (str engine ": the reclaim takes expired attach links beside sign-in links"))
+       (is (= [["A2"]] (raw ds "SELECT token FROM identifier_challenge")) (str engine ": and only the expired"))))))
+
+(deftest two-subjects-attaching-one-address--the-key-gives-it-to-exactly-one
+  (on-engines
+   (fn [engine ds]
+     (let [s (aj/register! ds ada)
+           t (aj/register! ds carol)
+           {:keys [parked-in-time? exit slow fast]}
+           (race ds (starts #"(?i)^\s*insert into account_identifier")
+                 #(store/attach-identifier! (aj/store %) s bob)
+                 #(store/attach-identifier! (aj/store %) t bob))]
+       (is (and parked-in-time? (= :released exit)) (str engine ": the slow attach was held before its INSERT"))
+       (is (= [[:ok true] [:ok false]] [fast slow]) (str engine ": the first to insert has it, the other is told so"))
+       (is (= [[bob t]] (raw ds (str "SELECT identifier, subject FROM account_identifier WHERE identifier = '" bob "'")))
+           (str engine ": and it is the winner's"))))))
+
+(defn- naive-attach
+  "An attach that trusts its read: the control this harness must catch."
+  [ds subject identifier]
+  (if-let [holder (aj/subject-for ds identifier)]
+    (= subject holder)
+    (do (try (jdbc/execute! ds ["INSERT INTO account_identifier (identifier, subject, created_at) VALUES (?, ?, 0)" identifier subject])
+             (catch java.sql.SQLException _ nil))
+        true)))
+
+(deftest a-naive-attach-tells-both-subjects-they-have-it-under-this-harness
+  (on-engines
+   (fn [engine ds]
+     (let [{:keys [parked-in-time? exit slow fast]}
+           (race ds (starts #"(?i)^\s*insert into account_identifier")
+                 #(naive-attach % "s" bob) #(naive-attach % "t" bob))]
+       (is (and parked-in-time? (= :released exit)) (str engine ": the harness parked and released"))
+       (is (= [[:ok true] [:ok true]] [fast slow])
+           (str engine ": both were told yes — if this ever answers one, the harness intercepts nothing"))))))
+
+(deftest a-sign-up-racing-an-attach-for-the-same-address-ends-as-the-attach-said
+  ;; register! is held at its first INSERT, inside its transaction but before any lock;
+  ;; the attach completes; register!'s own primary is then refused by the key, its
+  ;; transaction rolls back, and it answers who holds the address.
+  (on-engines
+   (fn [engine ds]
+     (let [t (aj/register! ds carol)
+           {:keys [parked-in-time? exit slow fast]}
+           (race ds (starts #"(?i)^\s*insert into account \(")
+                 #(aj/register! % bob)
+                 #(store/attach-identifier! (aj/store %) t bob))]
+       (is (and parked-in-time? (= :released exit)) (str engine ": the sign-up was held before its first INSERT"))
+       (is (= [[:ok true] [:ok t]] [fast slow]) (str engine ": the attach won, and the sign-up answers its subject"))
+       (is (= [] (raw ds (str "SELECT subject FROM account WHERE identifier = '" bob "'")))
+           (str engine ": the sign-up's account rolled back with its refused primary — no account without a way in"))))))
+
+(deftest the-backfill-gives-every-existing-account-its-primary
+  (on-engines (subvec aj/ddl 0 6)
+   (fn [engine ds]
+     (plant! ds "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)" "s-1" ada 11)
+     (plant! ds "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)" "s-2" carol 22)
+     (doseq [s (subvec aj/ddl 6)] (jdbc/execute! ds [s]))
+     (is (= [[ada "s-1" 11] [carol "s-2" 22]]
+            (vec (raw ds "SELECT identifier, subject, created_at FROM account_identifier ORDER BY identifier")))
+         (str engine ": every account registered before 0.13.0 signs in as before"))
+     (is (identical? ds (aj/check! ds)) (str engine ": and the result passes check!")))))
+
+(deftest an-account-an-earlier-version-registered-after-the-backfill-is-healed--not-refused
+  (on-engines
+   (fn [engine ds]
+     ;; What an instance of 0.12.0 writes during a rolling deploy: the account row only.
+     (plant! ds "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)" "s-old" ada 33)
+     (is (nil? (aj/subject-for ds ada)) (str engine ": witness: this version cannot see it yet"))
+     (is (= "s-old" (aj/register! ds ada)) (str engine ": register! answers the account that exists"))
+     (is (= ["s-old" [[ada "s-old" 33]]]
+            [(aj/subject-for ds ada) (vec (raw ds "SELECT identifier, subject, created_at FROM account_identifier"))])
+         (str engine ": and copied its primary across, so subject-for — which :on-unknown's check asks — agrees"))
+     (is (= 1 (count-of ds "account")) (str engine ": with no second account minted")))))
+
+(deftest an-unhealed-account-is-still-revoked-whole
+  (on-engines
+   (fn [engine ds]
+     (plant! ds "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)" "s-old" ada 33)
+     (plant! ds "INSERT INTO login_challenge (token, identifier, expires_at) VALUES (?, ?, ?)" "T" ada 9999)
+     (is (nil? (aj/subject-for ds ada)) (str engine ": witness: not healed yet"))
+     (is (= [ada] (store/identifiers-of (aj/store ds) "s-old"))
+         (str engine ": its primary is still one of its identifiers, read from the account"))
+     (is (= 1 (store/drop-challenges! (aj/store ds) (store/identifiers-of (aj/store ds) "s-old")))
+         (str engine ": so the link a revocation must end is dropped")))))
+
+(deftest a-heal-that-loses-the-address-to-an-attach-answers-who-holds-it
+  ;; An account an earlier version wrote holds bob; register! reads nobody, its own
+  ;; account INSERT is refused, and it heals — held here before the copy, while another
+  ;; subject attaches bob. The copy is refused, and the answer is the holder, never the
+  ;; stale account the heal started from.
+  (on-engines
+   (fn [engine ds]
+     (let [t (aj/register! ds carol)]
+       (plant! ds "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)" "s-old" bob 33)
+       (let [{:keys [parked-in-time? exit slow fast]}
+             (race ds (starts #"(?i)^\s*insert into account_identifier")
+                   #(aj/register! % bob)
+                   #(store/attach-identifier! (aj/store %) t bob))]
+         (is (and parked-in-time? (= :released exit)) (str engine ": the heal was held before its copy"))
+         (is (= [[:ok true] [:ok t]] [fast slow]) (str engine ": the attach won, and register! answers the holder"))
+         (is (= [[bob t]] (raw ds (str "SELECT identifier, subject FROM account_identifier WHERE identifier = '" bob "'")))
+             (str engine ": who holds it in the table")))))))
+
+(deftest an-insert-refused-for-anything-but-a-holder-is-an-error--not-an-answer
+  ;; NOT NULL is refused by both engines; a length past VARCHAR(320) is not — SQLite
+  ;; stores it — which is why the ceremony bounds an identifier before the store.
+  (on-engines
+   (fn [engine ds]
+     (let [st (aj/store ds)
+           s  (aj/register! ds ada)
+           e  (try (store/attach-identifier! st s nil) ::returned (catch Exception e e))]
+       (is (instance? java.sql.SQLException e)
+           (str engine ": an insert refused for anything but a holder is thrown, not answered as taken: " (pr-str e)))
+       (is (= [[ada s]] (holders ds)) (str engine ": and nothing was written"))))))
+
+(deftest an-attach-link-goes-to-exactly-one-of-two-takers-both-past-their-SELECT
+  (on-engines
+   (fn [engine ds]
+     (let [s (aj/register! ds ada)]
+       (store/put-attach-challenge! (aj/store ds) "A" s 0 bob 9999)
+       (let [{:keys [parked-in-time? exit slow fast]}
+             (race ds a-delete #(store/take-attach-challenge! (aj/store %) "A" s 0) #(store/take-attach-challenge! (aj/store %) "A" s 0))]
+         (is (and parked-in-time? (= :released exit)) (str engine ": the slow taker read the row and stopped before its DELETE"))
+         (is (= [[:ok {:ab/identifier bob :ab/expires-at 9999}] [:ok nil]] [fast slow])
+             (str engine ": the first DELETE has it; the other, which also read it, does not"))
+         (is (= 0 (count-of ds "identifier_challenge")) (str engine ": and it is gone")))))))
