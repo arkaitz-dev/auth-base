@@ -92,6 +92,16 @@
   store's record, or a bootstrap identity when there is none (SPEC §12)."
   ceremony/subject-of)
 
+(def account?
+  "`(account? subject)` → whether it is an account the store holds, rather than nobody or
+  a bootstrap identity, which has no record for a host's tables to refer to."
+  ceremony/account?)
+
+(def identifiers-of
+  "`(identifiers-of ceremony subject)` → every identifier the subject signs in with, its
+  primary and any attached; empty for a bootstrap identity."
+  ceremony/identifiers-of)
+
 (def normalise
   "`(normalise ceremony identifier)` → the identifier as this ceremony spells it
   before any store sees it: the host's `:normalise`, or trim and lower-case. Store an

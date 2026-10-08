@@ -220,6 +220,22 @@
 (defn- bootstrap? [subject]
   (boolean (and (map? subject) (:ab/bootstrap? subject))))
 
+(defn account?
+  "Whether `subject` is an account the store holds — a row a host's own tables can refer
+  to — rather than nobody or a bootstrap identity, which signs in with no record. Hosts
+  asked it two ways, by its type and by `:ab/bootstrap?`, and would have disagreed the
+  day the shape changed (booking FRICTION B20)."
+  [subject]
+  (and (some? subject) (not (bootstrap? subject))))
+
+(defn identifiers-of
+  "Every identifier `subject` signs in with — its primary and any attached since (SPEC
+  §18) — as the store holds them; empty for a bootstrap identity or nobody. What a host
+  matches an invitation or an address of its own against: `identifier-for` names the
+  primary alone."
+  [{:keys [store]} subject]
+  (if (account? subject) (vec (store/identifiers-of store subject)) []))
+
 (defn subject-of
   "The subject behind an identifier: the store's record, or — **only when there
   is none** — a bootstrap identity (SPEC §12). The absence of a record is the

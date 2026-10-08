@@ -133,8 +133,8 @@
 
 (defn identifier-for
   "The identifier an account was registered under — its primary — or nil. An address
-  attached since is not it: a host that matches something by this matches the primary
-  alone (SPEC §18)."
+  attached since is not it: a host that matches something against a person asks
+  `auth/identifiers-of`, every address the subject signs in with (SPEC §18)."
   [ds subject]
   (:identifier (one (datasource! ds) "SELECT identifier FROM account WHERE subject = ?" (subject-key subject))))
 

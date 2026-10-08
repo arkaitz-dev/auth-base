@@ -205,3 +205,31 @@
    (when (and everywhere? (nil? revoke-path))
      (throw (ex-info "auth-base testing: signing out everywhere needs the :revoke-path" {})))
    (wbt/visit b :post (if everywhere? revoke-path logout-path))))
+
+(def ^:private attach-defaults
+  {:identifiers-path "/addresses" :attach-path "/addresses/confirm" :field "identifier"})
+
+(defn attach
+  "The browser `b`, signed in, after adding `identifier` to its subject the way a person
+  does: the addresses page, the form posted, the attach link read with
+  `(read-token identifier)` and opened — a GET that spends nothing, then the POST that
+  attaches. It lands on the addresses page saying the address was added; any other
+  landing throws, naming it, and so does a token that cannot be read: a test about two
+  addresses must not go on with one. `opts`: `:identifiers-path`, `:attach-path`,
+  `:field`."
+  ([b identifier read-token] (attach b identifier read-token {}))
+  ([b identifier read-token opts]
+   (let [{:keys [identifiers-path attach-path field]} (merge attach-defaults opts)
+         asked (-> b (wbt/visit :get identifiers-path) (wbt/visit :post identifiers-path {field identifier}))
+         token (read-token identifier)]
+     (when-not token
+       (throw (ex-info (str "auth-base testing: no attach link was issued to " (pr-str identifier)
+                            " — the form landed on " (:path asked))
+                       {:identifier identifier :path (:path asked)})))
+     (let [link (str attach-path "/" token)
+           done (-> asked (wbt/visit :get link) (wbt/visit :post link))]
+       (when-not (= (str identifiers-path "?ab=added") (:path done))
+         (throw (ex-info (str "auth-base testing: " (pr-str identifier) " was not added — the link landed on "
+                              (:path done))
+                         {:identifier identifier :path (:path done)})))
+       done))))

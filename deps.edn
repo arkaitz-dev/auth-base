@@ -25,7 +25,7 @@
         ;; plugin. Only `dev.arkaitz.auth-base.web` and `.testing` may name it, a scan
         ;; says so, and the ceremony, handlers, session, store and jdbc namespaces still
         ;; run under any Ring host — the harness is that proof.
-        dev.arkaitz/web-base      {:mvn/version "0.15.0"}}
+        dev.arkaitz/web-base      {:mvn/version "0.16.0"}}
 
  :aliases
  {:test {:extra-paths ["test" "build" "harness/src" "harness/test" "demo/src" "demo/resources" "demo/test"]

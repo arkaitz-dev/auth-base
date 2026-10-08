@@ -6,6 +6,7 @@
   page a browser ends on — never the handler's return value alone."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
+            [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.handlers :as handlers]
             [dev.arkaitz.auth-base.store :as store]
@@ -275,3 +276,39 @@
     (is (= ["ada@x.test" :detached] [(first (peek @sent)) (:ab/kind (second (peek @sent)))]) "witness: the removal was told")
     (is (str/starts-with? (:path (wbt/visit b :get "/private")) "/login")
         "and the browser, re-established at the removal's generation, is signed out by the later one")))
+
+;; --- for hosts: account?, identifiers-of, testing/attach (since 0.15.0) ------------------
+
+(defn- attach-reader
+  "The token of the newest attach link sent to an address, from `sent`."
+  [sent]
+  (fn [identifier]
+    (some (fn [[to message]] (when (and (= to identifier) (= :attach-link (:ab/kind message)))
+                               (peek (str/split (:ab/link message) #"/"))))
+          (rseq @sent))))
+
+(deftest a-host-asks-whether-a-subject-is-an-account-one-way
+  (is (= [true true false false]
+         (mapv auth/account? [ada "a-subject-id" {:ab/identifier "root@x.test" :ab/bootstrap? true} nil]))
+      "a store's subject, of whatever shape, is an account; a bootstrap identity and nobody are not"))
+
+(deftest identifiers-of-is-every-address-a-subject-signs-in-with
+  (let [{:keys [app ceremony sent] :as h} (host)
+        b (signed-in h "ada@x.test")]
+    (is (= ["ada@x.test"] (auth/identifiers-of ceremony ada)) "witness: the primary alone at first")
+    (abt/attach b "bob@x.test" (attach-reader sent) {:attach-path "/sumar"})
+    (is (= #{"ada@x.test" "bob@x.test"} (set (auth/identifiers-of ceremony ada))) "the primary and the one attached")
+    (is (= [] (auth/identifiers-of ceremony {:ab/identifier "root@x.test" :ab/bootstrap? true})) "a bootstrap identity has none")
+    (is (= [] (auth/identifiers-of ceremony nil)) "nor does nobody")
+    (is (some? app) "witness: the host")))
+
+(deftest testing-attach-walks-as-a-person-and-refuses-to-walk-on-when-nothing-was-added
+  (let [{:keys [sent] :as h} (host)
+        b    (signed-in h "ada@x.test")
+        done (abt/attach b "bob@x.test" (attach-reader sent) {:attach-path "/sumar"})]
+    (is (= "/addresses?ab=added" (:path done)) "it lands where a person does")
+    (let [e (try (abt/attach done "dan@x.test" (constantly nil) {:attach-path "/sumar"}) (catch ExceptionInfo e e))]
+      (is (= {:identifier "dan@x.test" :path "/addresses?ab=sent"} (ex-data e)) "a link it cannot read throws, naming where the form landed"))
+    (let [e (try (abt/attach done "carol@x.test" (attach-reader sent) {:attach-path "/sumar"}) (catch ExceptionInfo e e))]
+      (is (= "carol@x.test" (:identifier (ex-data e))) "an address that was not added throws, naming it")
+      (is (not= "/addresses?ab=added" (:path (ex-data e))) (str "and the landing that was not 'added': " (pr-str (ex-data e)))))))

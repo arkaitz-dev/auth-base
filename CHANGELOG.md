@@ -6,6 +6,21 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.15.0 — 2026-10-08
+
+From what building `booking`, a third application, cost (its `FRICTION.md`).
+
+- `auth/identifiers-of`: every identifier a subject signs in with, the primary and any
+  attached — what an invitation to an address is matched against. A host reached into
+  the ceremony's store for it, or matched the primary alone through `identifier-for`.
+- `auth/account?`: whether a subject is an account the store holds, rather than nobody or
+  a bootstrap identity. Hosts asked it by the subject's type or by `:ab/bootstrap?`.
+- `testing/attach`: adds an address in a host's test as a person does, and throws unless
+  it was added.
+- The README says the ceremony's `token/mint` and `well-formed?` serve a host's own
+  bearer tokens.
+- web-base 0.16.0.
+
 ## 0.14.0 — 2026-10-08
 
 - **Breaking:** `auth-jdbc/rate-limiter` requires `:scope`, a name for the limit: a

@@ -472,8 +472,19 @@ with `?ab=welcome`, asking for another way in, with a link past it.
 `:detached` with `:ab/identifier`; `auth-web/mail` writes each in the request's language,
 from the `:ab/mail-attach-*`, `:ab/mail-attached-*` and `:ab/mail-detached-*` keys. A store
 of your own needs `store/Identifiers`; `auth-jdbc/store` and the in-memory one have it,
-and migrations 007-011 bring its tables. A host matching something by `identifier-for`
-— an invitation — matches the main address alone.
+and migrations 007-011 bring its tables. A host matching something against a person — an
+invitation to an address — asks `(auth/identifiers-of ceremony subject)`, every address
+the subject signs in with; `identifier-for` names the main one alone. `(auth/account?
+subject)` says whether the subject is an account a host's tables can refer to, rather
+than a bootstrap identity (since 0.15.0).
+
+In a host's tests, `(testing/attach browser "bob@x.test" read-token)` adds an address the
+way a person does — the page, the form, the link opened and pressed — and throws, naming
+where it landed, unless the address was added.
+
+**Tokens of your own.** `dev.arkaitz.auth-base.token/mint` and `well-formed?` — 32 random
+bytes, URL-safe, minted per call — are the ones the ceremony uses, and serve a host's own
+bearer tokens: a calendar feed, an API key. Keep a hash of it, never the token.
 
 ## The store port
 
