@@ -340,7 +340,8 @@
         attach-path  (get-in ceremony [:link :attach-path])
         remove-path  (some-> identifiers-path (str "/remove"))
         to-page      (fn [flag] (no-store (response/redirect (cond-> identifiers-path flag (str "?ab=" flag)) :see-other)))
-        to-login     (fn [] (no-store (response/redirect (str login-path "?next=" (codec/url-encode identifiers-path)) :see-other)))
+        reauth-path  (some->> identifiers-path codec/url-encode (str login-path "?next="))
+        to-login     (fn [] (no-store (response/redirect reauth-path :see-other)))
         ;; A bootstrap identity has no account to attach to (SPEC §12, §18): to every act
         ;; here it is a session with nothing to change, never a request that fails.
         recent?      (fn [request] (and (not (:ab/bootstrap? (subject-of request)))
@@ -356,7 +357,7 @@
                                  :recent?      (boolean (recent? request))
                                  :action       identifiers-path
                                  :remove       remove-path
-                                 :login        login-path
+                                 :login        reauth-path
                                  :skip         (or (next-of request) after-login)
                                  :field        field}
                                 (some-> (identifiers-flags (flag request)) (vector true) (->> (apply hash-map)))
@@ -369,11 +370,14 @@
        (let [page (no-store (response/response (render request (state-of request))))]
          ;; Remembered in the session the sign-in continues in, so the redemption can
          ;; return there: an `:ab/` key, which `:keep-session` never carries past it.
-         ;; Never in a session that already names a subject: a live one has nowhere
-         ;; to be sent, and a revoked one is `wrap-revoked`'s to delete — written
-         ;; back here, it would outlive its revocation until it expired. The cost, accepted:
-         ;; a revoked visitor sent here by the gate lands on `:after-login`, not the page.
-         (if-let [back (when-not (contains? (:session request) :ab/subject) (next-of request))]
+         ;; A live session keeps it too: signing in again, for the recency the addresses
+         ;; page asks for, must land back on that page. Never in a session that names a
+         ;; subject it no longer yields: a revoked one is `wrap-revoked`'s to delete —
+         ;; written back here, it would outlive its revocation until it expired. The cost,
+         ;; accepted: a revoked visitor the host's gate sends here lands on `:after-login`
+         ;; (one refused by this plugin's own pages arrives with the row already deleted).
+         (if-let [back (when-not (and (contains? (:session request) :ab/subject) (nil? (subject-of request)))
+                         (next-of request))]
            (assoc page :session (assoc (:session request) :ab/return-to back))
            page)))
 

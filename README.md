@@ -162,7 +162,12 @@ web-base's gate adds it (since 0.10.0) — the page is remembered in the session
 redemption lands there instead of `:after-login` (since 0.8.0). Only a local path is
 taken, checked when it is stored and again when it is used: `//evil.test`, `/\evil.test`,
 a scheme, a control character or anything over 2048 characters is ignored, and the
-landing is `:after-login`.
+landing is `:after-login`. A session still signed in keeps it too (since 0.16.0), so
+signing in again for the addresses page's recency lands back on that page — whose own
+link to sign in again carries `?next=`. A session whose subject was revoked is never
+written back, so a revoked visitor the host's gate sends here lands on `:after-login`;
+one refused by a page of this plugin's, whose `wrap-revoked` has already deleted the
+row, reaches the login page as a new visitor and is returned.
 
 Then `(auth/subject-fn ceremony)` is your `request → subject-or-nil`, and it is also
 where revocation takes effect.

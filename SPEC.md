@@ -339,7 +339,10 @@ opening the link on another device. The page's address is the token, so it is se
 
 The same release returns a person to the page that sent them to sign in: the login page
 keeps a local `next` in the session, and the redemption prefers it to `:after-login`,
-checking it again where the `Location` is written.
+checking it again where the `Location` is written. Since 0.16.0 a live session keeps it
+too, because signing in again for §18's recency must return to the page that asked; a
+session whose subject was revoked does not, since writing it back would keep alive a
+row `wrap-revoked` is there to delete.
 
 ## 10 · Revocation
 

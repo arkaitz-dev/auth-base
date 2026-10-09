@@ -175,6 +175,38 @@
       (is (= [200 "/addresses?ab=added"] (landed (wbt/visit (wbt/visit fresh :get path) :post path)))
           "a fresh sign-in redeems the same link, which the refusal did not spend"))))
 
+(deftest signing-in-again-for-the-addresses-page-lands-back-on-it
+  (let [{:keys [app ceremony box clock] :as h} (host)
+        read-token (abt/mailbox-reader ceremony box)
+        stale      (signed-in h "ada@x.test")
+        other      (signed-in h "ada@x.test")
+        _          (swap! clock + (* 15 60 1000))
+        page       (wbt/visit stale :get "/addresses")
+        href       (second (re-find #"<a class=\"ab-reauth\" href=\"([^\"]*)\"" (body page)))]
+    (is (= [200 "/addresses"] (landed page)) "witness: the stale browser is still signed in and on the page")
+    (is (= "/login?next=%2Faddresses" href) "the page's own link to sign in again names the page")
+    (let [login (wbt/visit page :get href)]
+      (is (= [200 "/login?next=%2Faddresses"] (landed login)) "witness: following it reaches the login page")
+      (let [back (abt/sign-in login "ada@x.test" read-token)]
+        (is (= [200 "/addresses"] (landed back)) "and signing in from there lands back on the addresses page")
+        (is (and (str/includes? (body back) "action=\"/addresses\"") (not (str/includes? (body back) "ab-reauth")))
+            "witness: recent again — the form to add is back")))
+    (is (= [200 "/private"] (landed (abt/sign-in other "ada@x.test" read-token)))
+        "control: another stale session, signing in without that link, lands on :after-login")))
+
+(deftest a-revoked-session-sent-to-sign-in-returns-only-where-the-refusal-already-dropped-it
+  (let [{:keys [ceremony box] :as h} (host)
+        read-token (abt/mailbox-reader ceremony box)
+        walk       (fn [path]
+                     (let [b       (signed-in h "ada@x.test")
+                           _       (ceremony/revoke! ceremony ada)
+                           refused (wbt/visit b :get path)]
+                       [(landed refused) (landed (abt/sign-in refused "ada@x.test" read-token))]))]
+    (is (= [[200 "/login?next=%2Faddresses"] [200 "/addresses"]] (walk "/addresses"))
+        "refused by the plugin's own page, whose wrap-revoked drops the row: the login page meets a new visitor and keeps next")
+    (is (= [[200 "/login?next=%2Freport"] [200 "/private"]] (walk "/report"))
+        "refused by the host's gate: the login page meets the revoked session itself, and the landing is :after-login")))
+
 (deftest adding-goes-through-the-sign-ins-own-limit
   (let [h (host {:rate-limit {:limit 3 :window-ms 60000}})
         b (wbt/visit (signed-in h "ada@x.test") :get "/addresses")

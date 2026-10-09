@@ -883,6 +883,27 @@
           (str uri ": a link with no token, or one mint could not have made, answers as a spent one")))
     (is (= [0 []] [@views (abt/calls log)]) "without rendering the view or asking the store")))
 
+(deftest the-login-page-remembers-next-for-anybody-but-a-revoked-subject
+  (let [{:keys [form ceremony] :as f} (fixture {:subjects {"ada@x.test" {:id 1}}})
+        subject-of (session/subject-fn ceremony)
+        visit      (fn [session] (form (cond-> (assoc (mock/request :get "/login") :query-string "next=%2Fa")
+                                         (some? session) (assoc :session session))))
+        live       (:session (signed-in f "ada@x.test" "/x"))]
+    (is (= {:id 1} (subject-of {:session live})) "witness: the live session yields its subject")
+    (is (nil? (subject-of {:session {:ab/subject {:id 1}}})) "witness: a subject with no generation yields nobody")
+    (is (= {:ab/subject {:id 1} :ab/generation 0 :ab/signed-in-at 1000 :ab/return-to "/a"} (:session (visit live)))
+        "a session still signed in keeps it, written back whole, so signing in again returns to the page")
+    (doseq [[label session expected] [["no session" nil #:ab{:return-to "/a"}]
+                                      ["an empty one" {} #:ab{:return-to "/a"}]
+                                      ["one with a generation and no subject" {:ab/generation 0 :x 1}
+                                       {:ab/generation 0 :x 1 :ab/return-to "/a"}]]]
+      (is (= expected (:session (visit session))) (str label ": kept")))
+    (ceremony/revoke! ceremony {:id 1})
+    (is (nil? (subject-of {:session live})) "witness: after revoke! the same session yields nobody")
+    (doseq [[label session] [["revoked" live] ["a subject with no generation" {:ab/subject {:id 1}}]]]
+      (is (not (contains? (visit session) :session))
+          (str label ": never written back — a revoked row is wrap-revoked's to delete")))))
+
 (deftest a-refused-page-is-returned-to-after-sign-in--and-only-a-local-one
   (let [{:keys [form redeem] :as f} (fixture {:subjects {"ada@x.test" {:id 1}}})
         stored  (fn [next] (get-in (form (assoc (mock/request :get "/login") :query-string (str "next=" next)))
@@ -891,9 +912,6 @@
                   (let [token (issued! f "ada@x.test")]
                     (get-in (redeem (assoc (mock/request :post (str "/entrar/" token)) :session session)) [:headers "Location"])))]
     (is (= "/orgs/7?tab=a+b" (stored "%2Forgs%2F7%3Ftab%3Da%2Bb")) "the login page remembers the page the gate named, as web-base encodes it")
-    (is (= [false true] (map #(contains? (form (assoc (mock/request :get "/login") :query-string "next=%2Fa" :session %)) :session)
-                             [{:ab/subject {:id 1}} {:ab/generation 0 :x 1}]))
-        "but never writes it into a session that names a subject — live, or revoked and wrap-revoked's to delete")
     (is (= ["/a" (str "/" (apply str (repeat 2047 "a")))] [(stored "%2Fa") (stored (str "%2F" (apply str (repeat 2047 "a"))))])
         "control: a local path is kept, up to 2048 characters")
     (doseq [bad ["%2F%2Fevil.test" "%2F%5Cevil.test" "https%3A%2F%2Fevil.test" "evil" "%2Fa%0D%0ASet-Cookie%3Ax" "%2Fa%20b"
