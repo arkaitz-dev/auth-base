@@ -378,3 +378,16 @@
          (mapv rate-limit/source-key ["192.0.2.7" "localhost" "example.test" nil]))
       "anything else is counted as it came — a name is never looked up")
   (is (= "0:0:0:0::/64" (auth/source-key "::1")) "and the facade answers the same"))
+
+(deftest retry-after-seconds-rounds-up-to-whole-seconds-and-never-overflows
+  ;; Long/MAX_VALUE is 9223372036854775.807 seconds, whose ceiling is ...776.
+  (is (= [0 1 1 1 2 2 2 2 9223372036854776]
+         (mapv rate-limit/retry-after-seconds [0 1 999 1000 1001 1999 2000 (int 1500) Long/MAX_VALUE]))
+      "0 1 999 1000 1001 1999 2000 (int 1500) MAX → the ceiling of ms/1000")
+  (is (identical? rate-limit/retry-after-seconds auth/retry-after-seconds) "the facade is the same function"))
+
+(deftest retry-after-seconds-refuses-anything-but-a-non-negative-whole-number
+  (doseq [v [-1 1.5 1.0 nil "1" 1N]]
+    (is (= ["auth-base: retry-after-seconds takes a non-negative whole number of milliseconds" {:ms v}]
+           (try (rate-limit/retry-after-seconds v) :answered (catch ExceptionInfo e [(ex-message e) (ex-data e)])))
+        (str (pr-str v) ": refused"))))

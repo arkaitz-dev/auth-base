@@ -14,6 +14,7 @@
   extra header, no page rendered at all."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.handlers :as handlers]
             [dev.arkaitz.auth-base.store :as store]
@@ -989,3 +990,23 @@
         "witness: signed in as false, at generation 0")
     (revoke request)
     (is (= 1 (ceremony/generation ceremony false)) "the subject false was revoked")))
+
+(deftest bearer-token-reads-exactly-one-token68-after-a-bearer-scheme
+  (let [read (fn [h] (handlers/bearer-token {:headers {"authorization" h}}))]
+    (doseq [[h expected] [["Bearer abc" "abc"] ["bearer abc" "abc"] ["BEARER abc" "abc"] ["bEaReR abc" "abc"]
+                          ["Bearer    abc" "abc"] ["Bearer abc " "abc"] ["Bearer abc\t" "abc"] ["Bearer abc \t " "abc"]
+                          ["Bearer abc==" "abc=="] ["Bearer abc=" "abc="] ["Bearer -._~+/" "-._~+/"]
+                          ["Bearer a-b" "a-b"] ["Bearer a.b" "a.b"] ["Bearer a_b" "a_b"] ["Bearer a~b" "a~b"]
+                          ["Bearer a+b" "a+b"] ["Bearer a/b" "a/b"] ["Bearer Az09" "Az09"]
+                          ["Bearer abc===" "abc==="] ["Bearer         abc" "abc"]]]
+      (is (= expected (read h)) (str (pr-str h) ": the token")))
+    (doseq [h ["" "Bearer" "Bearer " "Basic abc" "Bearer a b" "Bearer a, Bearer b" "Bearera" "Bearerabc"
+               ;; RFC 7235: the scheme and the token are separated by spaces, 1*SP.
+               "Bearer\tabc" " Bearer abc" "Bearer =abc" "Bearer ab=c" "Bearer abc=x" "Bearer abc =="
+               "Bearer é" "Bearer abc\n" "Bearer abc\r\n" "Bearer abc," "Bearer abc;x" "Bearer abc\u00a0"
+               "Bearer abc\f" "Bearer abc\u000b"]]
+      (is (nil? (read h)) (str (pr-str h) ": no token")))
+    (is (= [nil nil nil nil] [(handlers/bearer-token {}) (handlers/bearer-token nil) (read 42)
+                              (handlers/bearer-token {:headers {"Authorization" "Bearer abc"}})])
+        "no header, no request, a value that is no string, and a key Ring would have lower-cased: no token")
+    (is (identical? handlers/bearer-token auth/bearer-token) "the facade is the same function")))

@@ -489,7 +489,13 @@ where it landed, unless the address was added.
 
 **Tokens of your own.** `dev.arkaitz.auth-base.token/mint` and `well-formed?` — 32 random
 bytes, URL-safe, minted per call — are the ones the ceremony uses, and serve a host's own
-bearer tokens: a calendar feed, an API key. Keep a hash of it, never the token.
+bearer tokens: a calendar feed, an API key. Keep a hash of it, never the token:
+`(token/hash t)` is its SHA-256 as 64 lower-case hex digits (since 0.16.0), and the
+table keeps that. An API reads the presented one with `(auth/bearer-token request)` —
+nil unless `Authorization` holds exactly one `Bearer` token — and answers a miss with
+`(auth/unauthorized ceremony "Bearer realm=\"api\"")`. Its own limits answer
+`Retry-After` with `(auth/retry-after-seconds retry-after-ms)`, the same rounding the
+sign-in's 429 uses.
 
 ## The store port
 

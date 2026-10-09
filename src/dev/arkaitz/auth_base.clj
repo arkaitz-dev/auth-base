@@ -157,6 +157,11 @@
   `(unauthorized ceremony \"Bearer realm=\\\"api\\\"\")` names another scheme."
   handlers/unauthorized)
 
+(def bearer-token
+  "`(bearer-token request)` → the token an `Authorization: Bearer …` header carries, or
+  nil, for the same API (since 0.16.0)."
+  handlers/bearer-token)
+
 ;; --- What ships so the harness needs no infrastructure (SPEC §7, §11) -----
 
 (def in-memory-store
@@ -180,3 +185,8 @@
   `{:allowed? bool :retry-after-ms n}`: what a host's own 429 needs for `Retry-After`,
   and a value `:rate-limit` also takes as a function."
   rate-limit/fixed-window-decider)
+
+(def retry-after-seconds
+  "`(retry-after-seconds ms)` → the decider's `:retry-after-ms` as a `Retry-After`'s whole
+  seconds, rounded up — the sign-in's own 429 says the same (since 0.16.0)."
+  rate-limit/retry-after-seconds)

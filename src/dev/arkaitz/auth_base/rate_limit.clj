@@ -25,6 +25,18 @@
   (:require [clojure.string :as str]
             [dev.arkaitz.auth-base.instant :as instant]))
 
+(defn retry-after-seconds
+  "`ms` as the whole seconds a `Retry-After` names, rounded up, so a client that waits
+  exactly this long finds the window open (since 0.16.0): what `fixed-window-decider`'s
+  `:retry-after-ms` becomes in a host's own 429. By quotient and remainder rather than
+  `(quot (+ ms 999) 1000)`: a window as long as a long leaves up to `Long/MAX_VALUE` ms,
+  and adding to that overflows. Anything but a non-negative integer is refused."
+  [ms]
+  (when-not (and (int? ms) (not (neg? ms)))
+    (throw (ex-info "auth-base: retry-after-seconds takes a non-negative whole number of milliseconds"
+                    {:ms ms})))
+  (cond-> (quot ms 1000) (pos? (rem ms 1000)) inc))
+
 (defn source-key
   "The key a request's source is counted under — `(source-key (:remote-addr request))` —
   for a limit of the host's own as for the sign-in's (since 0.14.0): its address as one spelling —

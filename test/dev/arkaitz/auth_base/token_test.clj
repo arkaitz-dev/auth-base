@@ -17,7 +17,8 @@
   that keeps it out of a var root."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
-            [dev.arkaitz.auth-base.token :as token]))
+            [dev.arkaitz.auth-base.token :as token])
+  (:import [clojure.lang ExceptionInfo]))
 
 (def ^:private draws 1000)
 (def ^:private full-bit-positions 42)
@@ -78,3 +79,23 @@
             (symbol (str/join (repeat token/length "a")))]]]
     (is (false? (token/well-formed? value))
         (str "refused, and without throwing: " label))))
+
+;; Every digest below was computed outside the JVM — `printf '%s' … | shasum -a 256`, and
+;; Python's hashlib for the string with a NUL — never with MessageDigest, which is what
+;; the code under test calls.
+(deftest hash-is-the-sha-256-of-the-utf-8-bytes-in-lower-case-hex
+  (doseq [[label s expected]
+          [["the empty string" "" "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]
+           ["abc" "abc" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
+           ;; Latin-1 would hash the one byte e9 and answer de2e331d…: this cell is the charset's.
+           ["é, as UTF-8's c3 a9" "é" "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c"]
+           ;; The key jdbc's shared limiter stores, as jdbc_test also reads it from the row.
+           ["a scoped source key" "t\u0000203.0.113.9" "de31f799a2d6d9034dce86ab75478f2c5dcab846cae377204b1d2baf0da2544f"]]]
+    (is (= expected (token/hash s)) (str label ": the digest shasum gives"))))
+
+(deftest hash-refuses-anything-but-a-string
+  (doseq [[v type] [[nil nil] [:kw "clojure.lang.Keyword"] [(.getBytes "abc") "[B"] [1 "java.lang.Long"]
+                    ['abc "clojure.lang.Symbol"]]]
+    (is (= ["auth-base: token/hash takes a string" {:type type}]
+           (try (token/hash v) :answered (catch ExceptionInfo e [(ex-message e) (ex-data e)])))
+        (str (pr-str v) ": refused, naming its type"))))

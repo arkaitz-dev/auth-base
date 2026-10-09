@@ -9,8 +9,10 @@
   same tokens. And `well-formed?` is the boundary check: an unauthenticated
   caller chooses the string that reaches the store, so its length and alphabet
   are settled before it gets there."
-  (:import [java.security SecureRandom]
-           [java.util Base64]))
+  (:refer-clojure :exclude [hash])
+  (:import [java.nio.charset StandardCharsets]
+           [java.security MessageDigest SecureRandom]
+           [java.util Base64 HexFormat]))
 
 (def ^:private byte-count 32)
 
@@ -40,3 +42,14 @@
   entitled to assume its keys are bounded."
   [token]
   (boolean (and (string? token) (re-matches shape token))))
+
+(defn hash
+  "`token`'s SHA-256 over its UTF-8 bytes, as 64 lower-case hex digits: what a host keeps
+  of a bearer token of its own, so the table read by someone it leaked to opens nothing
+  (since 0.16.0). Not a password hash — no salt and no work factor, which a token of
+  `mint`'s 256 bits does not need. Anything but a string is refused."
+  [token]
+  (when-not (string? token)
+    (throw (ex-info "auth-base: token/hash takes a string" {:type (some-> token class .getName)})))
+  (.formatHex (HexFormat/of)
+              (.digest (MessageDigest/getInstance "SHA-256") (.getBytes ^String token StandardCharsets/UTF_8))))

@@ -30,10 +30,10 @@
   transaction holds waits as long as the host's pool and driver let it: those bounds
   are the host's, set where the pool is opened."
   (:require [dev.arkaitz.auth-base.store :as store]
+            [dev.arkaitz.auth-base.token :as token]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs])
   (:import [java.nio.charset StandardCharsets]
-           [java.security MessageDigest]
            [java.sql SQLException]
            [java.util UUID]
            [javax.sql DataSource]))
@@ -380,8 +380,7 @@
   from a reader of the table either: IPv4 has 2^32 addresses, and hashing them all takes
   minutes. Treat the table as the access log it amounts to."
   [key]
-  (let [digest (.digest (MessageDigest/getInstance "SHA-256") (.getBytes (str key) StandardCharsets/UTF_8))]
-    (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest))))
+  (token/hash (str key)))
 
 (defn rate-limiter
   "A rate limit over `ds` that every instance of a host shares, for the handlers'

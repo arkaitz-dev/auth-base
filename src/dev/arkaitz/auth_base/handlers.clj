@@ -147,13 +147,6 @@
     :else (fail! ":rate-limit must be a map of options or a function of one key"
                  [:rate-limit] rate-limit)))
 
-(defn- whole-seconds
-  "Rounded up, so a client that waits exactly this long finds the window open. By
-  quotient and remainder rather than `(quot (+ ms 999) 1000)`: a window as long as a
-  long leaves up to `Long/MAX_VALUE` ms, and adding to that overflows."
-  [ms]
-  (cond-> (quot ms 1000) (pos? (rem ms 1000)) inc))
-
 (def ^:private max-identifier-length
   "The longest identifier the form takes, as the ceremony will store it: the width of
   `login_challenge.identifier` in `auth-jdbc/ddl`. Beyond it the JDBC store's insert is
@@ -390,7 +383,7 @@
        (let [{:keys [allowed? retry-after-ms]} (decide (rate-limit/source-key (:remote-addr request)))]
          (if-not allowed?
            (cond-> (response/status (response/response (render request {:limited? true})) 429)
-             retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))
+             retry-after-ms (response/header "Retry-After" (str (rate-limit/retry-after-seconds retry-after-ms)))
              true           no-store)
          (let [identifier (get (:form-params request) field)]
            (if (and (submitted? identifier) (fits? ceremony identifier))
@@ -471,7 +464,7 @@
                  (let [{:keys [allowed? retry-after-ms]} (decide (rate-limit/source-key (:remote-addr request)))]
                    (if-not allowed?
                      (cond-> (response/status (response/response (view request (page-state request subject {:limited? true}))) 429)
-                       retry-after-ms (response/header "Retry-After" (str (whole-seconds retry-after-ms)))
+                       retry-after-ms (response/header "Retry-After" (str (rate-limit/retry-after-seconds retry-after-ms)))
                        true           no-store)
                      (let [identifier (get (:form-params request) field)]
                        (if (and (submitted? identifier) (fits? ceremony identifier))
@@ -568,3 +561,18 @@
                         (or challenge
                             (str "Session realm=\"" (get-in ceremony [:link :base-url]) "\"")))
        no-store)))
+
+(def ^:private bearer-credentials
+  "RFC 6750's `Bearer` and one token68 (RFC 7235 §2.1), the scheme case-insensitive as
+  HTTP's are. A header repeated and joined with a comma, or a token with a character
+  token68 lacks, does not match: two credentials are none."
+  #"(?i)bearer +([A-Za-z0-9\-._~+/]+=*)[ \t]*")
+
+(defn bearer-token
+  "The token an `Authorization: Bearer …` header carries, or nil — for a host's API,
+  beside `unauthorized` (since 0.16.0). It reads; whether the token opens anything is the
+  host's store to say."
+  [request]
+  (let [header (get-in request [:headers "authorization"])]
+    (when (string? header)
+      (second (re-matches bearer-credentials header)))))
