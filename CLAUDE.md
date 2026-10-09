@@ -37,7 +37,7 @@ work**, never from convention. Observed:
 ```
 clojure -M:test                        # whole suite incl. harness/ and demo/; exit ≠ 0 on failure
 clojure -M:test -n <namespace>         # one namespace (several -n allowed)
-clojure -T:build jar                   # library jar → target/auth-base-0.15.0.jar (no demos inside)
+clojure -T:build jar                   # library jar → target/auth-base-0.16.0.jar (no demos inside)
 clojure -T:build install               # jar + pom into ~/.m2, for a consumer on this machine
 clojure -T:build deploy                # to Clojars with CLOJARS_USERNAME/CLOJARS_PASSWORD; run for every release from 0.1.0
 clojure -T:build verify-release        # after deploy: the jar on Clojars, byte for byte against the tag
@@ -129,6 +129,12 @@ of these fails silently.**
 - **Looking for a configuration file nobody named.** The bootstrap list arrives as data
   the host passes in. A library that knows a filename can look for it, and then the
   directory a process started from decides who is an administrator.
+- **Two Unicode spellings of one address are two accounts — open, not fixed.** The
+  default `normalise` lower-cases and does not apply Unicode normalisation, so `ño@x.test`
+  typed precomposed (U+00F1) and decomposed (`n` + U+0303) normalise to different strings
+  and reach different subjects (probed 2026-10-09, found by helpdesk's H5). Deferred
+  because the fix — NFC in the default normal form — changes what an existing store's
+  keys mean, and needs a decision on migrating stored identifiers.
 
 ## Where the boundary is expected to erode
 

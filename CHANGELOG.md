@@ -6,6 +6,22 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.16.0 — 2026-10-09
+
+From what building `helpdesk`, a fourth application, cost (its `FRICTION.md`, H16, H17,
+H24, H28).
+
+- **Changed:** the login page keeps `next` for a session still signed in, so signing in
+  again for the addresses page's recency lands back on that page, whose own link to sign
+  in again now carries `?next=`. Before, any session naming a subject dropped it and the
+  person landed on `:after-login`. A revoked session is still never written back.
+- `token/hash`: a token's SHA-256 as 64 lower-case hex digits — the hash the README has
+  always told a host to keep, now one call.
+- `auth/retry-after-seconds`: the sign-in's own rounding of `:retry-after-ms` to a
+  `Retry-After`, for a host's 429.
+- `auth/bearer-token`: the token an `Authorization: Bearer …` header carries, or nil.
+- web-base 0.17.0.
+
 ## 0.15.0 — 2026-10-08
 
 From what building `booking`, a third application, cost (its `FRICTION.md`).
