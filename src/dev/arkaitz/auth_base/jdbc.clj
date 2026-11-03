@@ -29,7 +29,9 @@
   **No statement carries a deadline of its own.** A write waiting on a row lock a host
   transaction holds waits as long as the host's pool and driver let it: those bounds
   are the host's, set where the pool is opened."
-  (:require [dev.arkaitz.auth-base.store :as store]
+  (:require [clojure.string :as str]
+            [dev.arkaitz.auth-base.ceremony :as ceremony]
+            [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.token :as token]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs])
@@ -97,6 +99,49 @@
                                   " statement per migration or separated by --;;")
                              {:table table :config-key [:datasource]}
                              e)))))
+    ds))
+
+(defn check-identifiers!
+  "Refuses a boot whose stored identifiers are not all in `ceremony`'s normal form, and
+  returns `ds` otherwise (since 0.17.0). For the host's boot, after `check!`: an
+  identifier stored under another spelling — the normal form changed (0.17.0 added NFC
+  and a Unicode domain), or the host's `:normalise` did — is one no sign-in reaches, so
+  its owner would be given a new, empty account without a word. It reads every
+  identifier of `account` and `account_identifier`, once per boot, and writes nothing:
+  which spelling a row should take, and what to do when two rows become one, are the
+  operator's to decide. The refusal names each table, how many rows and their subjects,
+  never an identifier — a person's address is not a log line; a host `:normalise` that
+  throws on a stored row is refused naming the table, the subject and the exception's
+  class, without its message, which might quote the address. Challenge rows are not
+  read: they live minutes, and both redemptions normalise what they hold."
+  [ds ceremony]
+  (let [ds    (datasource! ds)
+        found (vec (for [table ["account" "account_identifier"]
+                         :let [rows (try (jdbc/execute! ds [(str "SELECT identifier, subject FROM " table)] as-maps)
+                                         (catch SQLException e
+                                           (throw (ex-info (str "auth-base jdbc: check-identifiers! could not read table "
+                                                                table " — run check! first")
+                                                           {:table table :config-key [:datasource]}
+                                                           e))))
+                               stale (filter (fn [{:keys [identifier subject]}]
+                                               (not= identifier
+                                                     (try (ceremony/normalise ceremony identifier)
+                                                          ;; The host's own rule; its message may quote what it
+                                                          ;; was given, so it is named and not kept as a cause.
+                                                          (catch Exception e
+                                                            (throw (ex-info (str "auth-base jdbc: the ceremony's :normalise threw on an"
+                                                                                 " identifier stored in " table)
+                                                                            {:table table :subject subject
+                                                                             :exception (.getName (class e))
+                                                                             :config-key [:normalise]}))))))
+                                             rows)]
+                         :when (seq stale)]
+                     {:table table :rows (count stale) :subjects (vec (sort (distinct (map :subject stale))))}))]
+    (when (seq found)
+      (throw (ex-info (str "auth-base jdbc: stored identifiers are not in this ceremony's normal form — "
+                           (str/join ", " (map #(str (:rows %) " in " (:table %)) found))
+                           "; re-store each through auth/normalise, deciding by hand where two become one")
+                      {:not-normal found})))
     ds))
 
 ;; --- accounts -------------------------------------------------------------------

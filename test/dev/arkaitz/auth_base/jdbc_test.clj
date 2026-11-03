@@ -518,6 +518,102 @@
        (is (= bos (aj/latest-challenge-token ds "bo@x.test")) (str engine ": each identifier its own"))
        (is (nil? (aj/latest-challenge-token ds "nobody@x.test")) (str engine ": nil when none was issued"))))))
 
+;; --- check-identifiers! (0.17.0) --------------------------------------------------------------
+;; Spellings as literals with explicit escapes: computing them through the rule would
+;; compare it with itself.
+
+(defn- a-ceremony
+  ([ds] (a-ceremony ds {}))
+  ([ds extra]
+   (ceremony/ceremony (merge {:store (aj/store ds) :deliver! (fn [_ _])
+                              :link {:base-url "https://x.test" :redeem-path "/entrar"}}
+                             extra))))
+
+(defn- refusal [f] (try (f) :answered (catch clojure.lang.ExceptionInfo e e)))
+
+(defn- plant-stale!
+  "One account whose identifier is NFD, and three identifier rows a default rule
+  refuses: two in punycode under one subject, one with a trailing space under a subject
+  that sorts first while its identifier sorts last — so neither the order rows were
+  written in nor the key's can stand in for sorting the subjects."
+  [ds]
+  (plant! ds "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)" "s-nfd" "ada@cafe\u0301.test" 1)
+  (plant! ds "INSERT INTO account_identifier (identifier, subject, created_at) VALUES (?, ?, ?)" "bob@xn--mller-kva.test" "s-puny" 1)
+  (plant! ds "INSERT INTO account_identifier (identifier, subject, created_at) VALUES (?, ?, ?)" "bob2@xn--mller-kva.test" "s-puny" 1)
+  (plant! ds "INSERT INTO account_identifier (identifier, subject, created_at) VALUES (?, ?, ?)" "z@x.test " "s-a" 1))
+
+(defn- every-row [ds]
+  [(raw ds "SELECT subject, identifier, created_at FROM account ORDER BY subject")
+   (raw ds "SELECT identifier, subject, created_at FROM account_identifier ORDER BY identifier")])
+
+(deftest check-identifiers!-answers-the-datasource-when-every-identifier-is-in-the-normal-form
+  (on-engines
+   (fn [engine ds]
+     (let [c (a-ceremony ds)]
+       (doseq [typed ["ada@cafe\u0301.test" "BOB@XN--MLLER-KVA.test" "  Carol@X.Test "]]
+         (aj/register! ds (ceremony/normalise c typed)))
+       (is (= 3 (count-of ds "account")) (str engine ": witness: three accounts, stored as the ceremony spells them"))
+       (is (identical? ds (aj/check-identifiers! ds c)) (str engine ": the boot goes on, with the same datasource"))))))
+
+(deftest check-identifiers!-refuses-a-stored-spelling-the-ceremony-would-never-reach--naming-no-address
+  (on-engines
+   (fn [engine ds]
+     (let [c      (a-ceremony ds)
+           ;; A healthy account beside them: only the stale rows are counted and named.
+           _      (aj/register! ds "ok@x.test")
+           _      (plant-stale! ds)
+           before (every-row ds)
+           e      (refusal #(aj/check-identifiers! ds c))]
+       (is (= ["auth-base jdbc: stored identifiers are not in this ceremony's normal form — 1 in account, 3 in account_identifier; re-store each through auth/normalise, deciding by hand where two become one"
+               {:not-normal [{:table "account" :rows 1 :subjects ["s-nfd"]}
+                             {:table "account_identifier" :rows 3 :subjects ["s-a" "s-puny"]}]}
+               nil]
+              (when (instance? clojure.lang.ExceptionInfo e) [(ex-message e) (ex-data e) (ex-cause e)]))
+           (str engine ": refused, naming tables, row counts and subjects: " (pr-str e)))
+       (is (= [] (for [link (take-while some? (iterate ex-cause e))
+                       :let [text (str (ex-message link) (pr-str (ex-data link)))]
+                       :when (str/includes? text "@")]
+                   text))
+           (str engine ": and no address in any of it, in either spelling"))
+       (is (= before (every-row ds)) (str engine ": nothing was rewritten"))))))
+
+(deftest check-identifiers!-applies-the-hosts-own-normal-form
+  (on-engines
+   (fn [engine ds]
+     (plant-stale! ds)
+     (is (identical? ds (aj/check-identifiers! ds (a-ceremony ds {:normalise identity})))
+         (str engine ": under a host rule that keeps every spelling, the same rows pass"))))
+  (on-engines
+   (fn [engine ds]
+     (plant! ds "INSERT INTO account (subject, identifier, created_at) VALUES (?, ?, ?)" "s-up" "ADA@X.TEST" 1)
+     (plant! ds "INSERT INTO account_identifier (identifier, subject, created_at) VALUES (?, ?, ?)" "ADA@X.TEST" "s-up" 1)
+     (is (identical? ds (aj/check-identifiers! ds (a-ceremony ds {:normalise str/upper-case})))
+         (str engine ": upper-case rows pass under a host that upper-cases"))
+     (is (= {:not-normal [{:table "account" :rows 1 :subjects ["s-up"]} {:table "account_identifier" :rows 1 :subjects ["s-up"]}]}
+            (ex-data (refusal #(aj/check-identifiers! ds (a-ceremony ds)))))
+         (str engine ": and are refused under the default")))))
+
+(deftest check-identifiers!-names-a-host-rule-that-throws--without-its-message
+  (on-engines
+   (fn [engine ds]
+     (plant-stale! ds)
+     (let [e (refusal #(aj/check-identifiers! ds (a-ceremony ds {:normalise (fn [id] (throw (IllegalStateException. (str "cannot " id))))})))]
+       (is (= ["auth-base jdbc: the ceremony's :normalise threw on an identifier stored in account"
+               {:table "account" :subject "s-nfd" :exception "java.lang.IllegalStateException" :config-key [:normalise]}
+               nil]
+              (when (instance? clojure.lang.ExceptionInfo e) [(ex-message e) (ex-data e) (ex-cause e)]))
+           (str engine ": named, with nothing of the host's message, which quotes the address: " (pr-str e)))))))
+
+(deftest check-identifiers!-refuses-a-missing-table-by-name
+  (doseq [table ["account_identifier" "account"]]
+    (on-engines
+     (fn [engine ds]
+       (plant! ds (str "DROP TABLE " table))
+       (let [e (refusal #(aj/check-identifiers! ds (a-ceremony ds)))]
+         (is (= {:table table :config-key [:datasource]} (ex-data e)) (str engine ": names " table))
+         (is (str/includes? (str (ex-message e)) (str "could not read table " table)) (str engine ": in its message"))
+         (is (instance? SQLException (ex-cause e)) (str engine ": with the engine's refusal as its cause")))))))
+
 ;; --- 6 · refusals -------------------------------------------------------------------------------
 
 (deftest every-public-function-refuses-what-is-not-a-DataSource-by-name-and-touches-nothing
@@ -531,7 +627,8 @@
                    ["reclaim-expired!" aj/reclaim-expired! [0]]
                    ["latest-challenge-token" aj/latest-challenge-token [ada]]
                    ["rate-limiter" aj/rate-limiter [{:scope "t" :limit 2 :window-ms 1000}]]
-                   ["reclaim-expired-attempts!" aj/reclaim-expired-attempts! [0]]]]
+                   ["reclaim-expired-attempts!" aj/reclaim-expired-attempts! [0]]
+                   ["check-identifiers!" aj/check-identifiers! [(a-ceremony ds)]]]]
        (doseq [[label f args] calls
                [bad what type] [[{:datasource ds} "a map" "clojure.lang.PersistentArrayMap"]
                                 ["jdbc:h2:mem:x" "java.lang.String" "java.lang.String"]]]
