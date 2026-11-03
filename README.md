@@ -623,7 +623,7 @@ something to name when there is no local identity at all.
 | `:ttl-ms` | how long a challenge lives (default 15 minutes) |
 | `:clock` | `(fn [])` → epoch milliseconds (default the system clock) |
 | `:bootstrap` | identifiers that hold no record and may still enter |
-| `:normalise` | `(fn [identifier])` → canonical form (default trim + lower-case); `(auth/normalise ceremony id)` applies it, for an address the host stores itself |
+| `:normalise` | `(fn [identifier])` → canonical form (default trim, NFC, lower-case, `xn--` domain labels in Unicode — so `deliver!` receives the Unicode domain, which sendmail-base encodes; since 0.17.0); `(auth/normalise ceremony id)` applies it, for an address the host stores itself |
 | `:on-unknown` | `(fn [identifier])` → a subject, or nil. How you answer a redemption by somebody you have no record of — `#(auth-jdbc/register! ds %)` with the JDBC store. Absent, there is no answer and the redemption fails: nobody new can ever sign in. Since 0.4.0 its answer must be `=` to what `subject-for` then answers, or the redemption is refused |
 
 `auth/handlers` and `auth/routes` — likewise:

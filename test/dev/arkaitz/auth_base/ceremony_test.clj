@@ -550,11 +550,10 @@
   (let [{:keys [ceremony log]}
         (fixture {:subjects {"known@x.test" {:id 1}} :registers minted-by-hook})]
     ;; Spelled raw, so the canonical assertion below is not comparing a string
-    ;; with itself: trim and lower-case are no-ops on an address that already
-    ;; arrived canonical, and `issue!` losing its `normalise` call would be
-    ;; invisible here.
-    (doseq [[label identifier] [["a known address" "  Known@X.test "]
-                                ["an unknown one"  "  Nobody@X.test "]]]
+    ;; with itself: normalising is a no-op on an address that already arrived
+    ;; canonical, and `issue!` losing its `normalise` call would be invisible here.
+    (doseq [[label identifier expected] [["a known address" "  Known@X.test " "known@x.test"]
+                                         ["an unknown one"  "  Nobody@X.test " "nobody@x.test"]]]
       (reset! log [])
       (is (nil? (ceremony/issue! ceremony identifier))
           (str "issuing answers nothing, as it always did: " label))
@@ -563,8 +562,58 @@
       ;; the claim here is about which questions were asked, not which token.
       (is (= [:put-challenge!] (abt/calls log))
           (str "and it asks one thing only — it looks nobody up and it registers nobody: " label))
-      (is (= (some-> identifier str/trim str/lower-case) (nth (first @log) 2))
+      (is (= expected (nth (first @log) 2))
           (str "under the canonical spelling, as it always did: " label)))))
+
+;; --- one mailbox, one account (0.17.0) ------------------------------------------
+;; Every expected value is a literal: computing it through Normalizer or lower-case would
+;; compare the rule with itself. The NFD spelling is built with explicit combining marks,
+;; and its witness says it differs from the NFC literal before anything normalises it.
+
+(def ^:private nfc-ana "ana@\u00f1and\u00fa.es")
+(def ^:private nfd-ana "ana@n\u0303andu\u0301.es")
+
+(deftest one-mailbox-is-one-account--two-mailboxes-stay-two--end-to-end
+  (is (and (not= nfd-ana nfc-ana) (= [14 12] [(count nfd-ana) (count nfc-ana)]))
+      "witness: the decomposed spelling is not the composed one as typed")
+  (doseq [[label seed typed id delivered]
+          [["a decomposed domain" {nfc-ana {:id 1}} nfd-ana 1 nfc-ana]
+           ["the domain typed in punycode, upper-cased" {nfc-ana {:id 1}} "ANA@XN--AND-6MA2C.ES" 1 nfc-ana]
+           ["control: plain ASCII" {"ada@x.test" {:id 7}} "Ada@X.test" 7 "ada@x.test"]
+           ;; Two mailboxes a provider may keep apart: each typed spelling reaches its own.
+           ["\u00df is not ss" {"a@fass.de" {:id 2} "a@fa\u00df.de" {:id 3}} "A@Fa\u00df.de" 3 "a@fa\u00df.de"]
+           ["the \ufb01 ligature is not fi" {"file@x.test" {:id 4} "\ufb01le@x.test" {:id 5}} "\ufb01le@x.test" 5 "\ufb01le@x.test"]
+           ;; IDNA2003 cannot round-trip this label, so it stays as typed (lower-cased).
+           ["an undecodable label" {"a@fa\u00df.de" {:id 3} "a@xn--fa-hia.de" {:id 6}} "a@XN--FA-HIA.de" 6 "a@xn--fa-hia.de"]]]
+    (let [{:keys [ceremony deliveries]} (fixture {:subjects seed})]
+      (ceremony/issue! ceremony typed)
+      (let [[to link] (peek @deliveries)]
+        (is (= delivered to) (str label ": the link went to the canonical spelling"))
+        (is (= [{:id id} {:id id}] [(ceremony/redeem! ceremony (abt/token-of link)) (ceremony/subject-of ceremony typed)])
+            (str label ": redeemed and looked up as the account seeded under " (pr-str delivered)))))))
+
+(deftest the-default-rule-is-this-table--and-idempotent
+  (let [{:keys [ceremony]} (fixture {})]
+    (doseq [[typed expected] [["  Ana@\u00d1and\u00fa.ES " nfc-ana]
+                              [nfd-ana nfc-ana]
+                              ["ANA@XN--AND-6MA2C.ES" nfc-ana]
+                              ["a@xn--and-6ma2c.es" "a@\u00f1and\u00fa.es"]
+                              ["a@b@xn--and-6ma2c.es" "a@b@\u00f1and\u00fa.es"]
+                              ["a@xn--and-6ma2c.xn--and-6ma2c.es" "a@\u00f1and\u00fa.\u00f1and\u00fa.es"]
+                              ["a@xn--and-6ma2c.es." "a@\u00f1and\u00fa.es."]
+                              ;; Only the domain: a local part, or no `@` at all, is never decoded.
+                              ["xn--and-6ma2c.b@x.test" "xn--and-6ma2c.b@x.test"]
+                              ["xn--and-6ma2c" "xn--and-6ma2c"]
+                              ["a@x..y" "a@x..y"]
+                              ["a@" "a@"]
+                              ;; The "never" side: a casefold, NFKC or raw-decode mutant reds here.
+                              ["a@xn--fa-hia.de" "a@xn--fa-hia.de"]
+                              ["a@fa\u00df.de" "a@fa\u00df.de"]
+                              ["\ufb01le@x.test" "\ufb01le@x.test"]
+                              ["plain" "plain"]]]
+      (let [out (auth/normalise ceremony typed)]
+        (is (= expected out) (str (pr-str typed) " is " (pr-str expected)))
+        (is (= out (auth/normalise ceremony out)) (str (pr-str typed) ": normalising its form again changes nothing"))))))
 
 (deftest subject-of-never-asks-:on-unknown--registering-belongs-to-redemption-and-to-nothing-else
   ;; `subject-of` is public, and the whole safety argument for this key is that

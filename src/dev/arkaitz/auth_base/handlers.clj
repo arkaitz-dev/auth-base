@@ -166,8 +166,9 @@
 (defn- fits?
   "Whether `identifier`, normalised as the ceremony will store it, is within
   `max-identifier-length`. Normalised first, because that is the value the column holds
-  and lower-casing can lengthen a string — \"İ\" is two characters lower-cased — while
-  trimming can shorten one (corrected 2026-09-28: 0.5.0 counted what was typed).
+  and lower-casing can lengthen a string — \"İ\" is two characters lower-cased — as can
+  NFC (U+0958 is two once composed), while trimming, and writing a punycode domain in
+  Unicode, can shorten one (corrected 2026-09-28: 0.5.0 counted what was typed).
   Counted as Java counts a String, which never undercounts a VARCHAR."
   [ceremony identifier]
   (<= (count (ceremony/normalise ceremony identifier)) max-identifier-length))

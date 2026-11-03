@@ -23,7 +23,9 @@
             [dev.arkaitz.auth-base.instant :as instant]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.token :as token])
-  (:import [java.util Locale]))
+  (:import [java.net IDN]
+           [java.text Normalizer Normalizer$Form]
+           [java.util Locale]))
 
 (def ^:private default-ttl-ms (* 15 60 1000))
 
@@ -52,6 +54,17 @@
            [:link :attach-path] attach-path))
   link)
 
+(defn- unicode-domain
+  "`identifier` with each `xn--` label after its last `@` decoded; with no `@`, as given.
+  `IDN/toUnicode` never throws, and answers as it came a label whose decoding would not
+  encode back to it."
+  [^String identifier]
+  (if-let [at (str/last-index-of identifier "@")]
+    (str (subs identifier 0 (inc at))
+         (str/join "." (for [label (str/split (subs identifier (inc at)) #"\." -1)]
+                         (if (str/starts-with? label "xn--") (IDN/toUnicode label) label))))
+    identifier))
+
 (defn- normalise-default
   "Addresses arrive as people type them. Without this, `Ada@example.test` and
   `ada@example.test` are two accounts and one of them can never log in.
@@ -59,13 +72,25 @@
   Lower-cased under `Locale/ROOT`, never the JVM's default (corrected 2026-09-28): under
   a Turkish or Azeri default `str/lower-case` turns \"I\" into a dotless \"ı\", so
   `ADA@IX.TEST` became `ada@ıx.test` — another account on that JVM, and a link sent to a
-  domain that does not exist."
+  domain that does not exist.
+
+  One mailbox, one account (since 0.17.0). The rule it keeps: two spellings are merged
+  only when every delivery of either reaches the same mailbox, since a merge of two
+  mailboxes would hand one person's account to whoever holds the other. So it applies
+  NFC — the same text however it was composed, as IDNA's own mapping does to a domain —
+  and, in the part after the last `@`, writes each `xn--` label in Unicode, the
+  spelling every other way of typing that domain reaches. Lower-case comes first, or
+  `XN--` would not be seen. Only what `java.net.IDN`, which is IDNA2003, decodes and
+  encodes back the same is decoded; any other label stays as typed. Never NFKC or full
+  case folding (`ß` and `ss`, `ﬁ` and `fi` are mailboxes a provider may keep apart), and
+  never the ASCII form, which IDNA2003 reaches by rewriting `faß.de` into another domain."
   [identifier]
-  (some-> identifier str str/trim (.toLowerCase Locale/ROOT)))
+  (some-> identifier str str/trim (Normalizer/normalize Normalizer$Form/NFC) (.toLowerCase Locale/ROOT)
+          unicode-domain))
 
 (defn normalise
-  "`identifier` as this ceremony spells it — the host's `:normalise`, or trim and
-  lower-case — which is the form `issue!`, `subject-of` and `:on-unknown` hand the
+  "`identifier` as this ceremony spells it — the host's `:normalise`, or trim, NFC,
+  lower-case and a Unicode domain (`normalise-default`) — which is the form `issue!`, `subject-of` and `:on-unknown` hand the
   store. For a host that keeps addresses of its own (an invitation to someone who has
   not signed in yet, a seeded account): stored this way they match the account the
   ceremony will ask for, and stored any other way they silently never do."
@@ -94,7 +119,7 @@
     :ttl-ms     how long a challenge lives (default 15 minutes)
     :clock      (fn []) → epoch milliseconds (default the system clock)
     :bootstrap  identifiers that hold no record and may still enter (SPEC §12)
-    :normalise  (fn [identifier]) → the canonical form (default trim + lower-case);
+    :normalise  (fn [identifier]) → the canonical form (default trim, NFC, lower-case, a Unicode domain);
                 idempotent, since a form already canonical is put through it again
     :on-unknown (fn [identifier]) → a subject, or nil — how this host answers a
                 redemption by someone it has no record of. Absent, there is no

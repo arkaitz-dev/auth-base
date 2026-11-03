@@ -104,7 +104,8 @@
 
 (def normalise
   "`(normalise ceremony identifier)` → the identifier as this ceremony spells it
-  before any store sees it: the host's `:normalise`, or trim and lower-case. Store an
+  before any store sees it: the host's `:normalise`, or trim, NFC, lower-case and the
+  domain's punycode labels in Unicode (since 0.17.0). Store an
   address of your own this way, or it will not match the account it names."
   ceremony/normalise)
 

@@ -213,9 +213,15 @@
       (submit {"identifier" padded})
       (is (= [322 [:put-challenge!]] [(count padded) (abt/calls log)])
           "control: what decides is the stored form — 322 as typed, 320 once trimmed, accepted"))
+    (let [encoded (str (apply str (repeat 311 "a")) "@xn--and-6ma2c.es")]
+      (submit {"identifier" encoded})
+      (is (= [328 [:put-challenge!]] [(count encoded) (abt/calls log)])
+          "and 328 as typed, 320 once its domain is decoded, accepted"))
     (doseq [[label form-params] [["an empty field"     {"identifier" ""}]
                                  ["320 as typed and 321 once lower-cased, the form stored"
                                   {"identifier" (str "\u0130" (apply str (repeat 312 "c")) "@x.test")}]
+                                 ["320 as typed and 321 once composed: NFC can lengthen"
+                                  {"identifier" (str "\u0958" (apply str (repeat 312 "c")) "@x.test")}]
                                  ["one character longer than the ddl's column"
                                   {"identifier" (str (apply str (repeat 314 "a")) "@x.test")}]
                                  ["whitespace only"    {"identifier" "   "}]
@@ -229,9 +235,10 @@
             (str "back to the page in its ordinary state, saying nothing that was not asked: " label))
         (is (= [] @log)
             (str "and the store was never touched, so no challenge exists under that key: " label))))
-    (is (= ["ada@x.test" (str (apply str (repeat 313 "a")) "@x.test") (str (apply str (repeat 313 "b")) "@x.test")]
+    (is (= ["ada@x.test" (str (apply str (repeat 313 "a")) "@x.test") (str (apply str (repeat 313 "b")) "@x.test")
+            (str (apply str (repeat 311 "a")) "@\u00f1and\u00fa.es")]
            (mapv first @deliveries))
-        "and links went only to the three controls")))
+        "and links went only to the four controls, the last to its domain in Unicode")))
 
 (deftest the-bound-is-on-the-hosts-own-normal-form
   ;; A host normaliser that lengthens: what is stored, and so what is bounded, is its
