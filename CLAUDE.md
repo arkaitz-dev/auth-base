@@ -37,7 +37,7 @@ work**, never from convention. Observed:
 ```
 clojure -M:test                        # whole suite incl. harness/ and demo/; exit ≠ 0 on failure
 clojure -M:test -n <namespace>         # one namespace (several -n allowed)
-clojure -T:build jar                   # library jar → target/auth-base-0.16.0.jar (no demos inside)
+clojure -T:build jar                   # library jar → target/auth-base-0.17.0.jar (no demos inside)
 clojure -T:build install               # jar + pom into ~/.m2, for a consumer on this machine
 clojure -T:build deploy                # to Clojars with CLOJARS_USERNAME/CLOJARS_PASSWORD; run for every release from 0.1.0
 clojure -T:build verify-release        # after deploy: the jar on Clojars, byte for byte against the tag
@@ -129,12 +129,14 @@ of these fails silently.**
 - **Looking for a configuration file nobody named.** The bootstrap list arrives as data
   the host passes in. A library that knows a filename can look for it, and then the
   directory a process started from decides who is an administrator.
-- **Two Unicode spellings of one address are two accounts — open, not fixed.** The
-  default `normalise` lower-cases and does not apply Unicode normalisation, so `ño@x.test`
-  typed precomposed (U+00F1) and decomposed (`n` + U+0303) normalise to different strings
-  and reach different subjects (probed 2026-10-09, found by helpdesk's H5). Deferred
-  because the fix — NFC in the default normal form — changes what an existing store's
-  keys mean, and needs a decision on migrating stored identifiers.
+- **Two spellings of one mailbox were two accounts — resolved in 0.17.0** (2026-11-03,
+  `3879012`, `bc88da9`, `8cdf931`). The live case was the domain, not the local part
+  (sendmail-base never delivers to a non-ASCII local part): composed, decomposed and
+  punycode spellings of one domain. The default is now trim → NFC → lower(ROOT) → `xn--`
+  labels in Unicode, under the rule "merge only what every delivery sends to one
+  mailbox"; NFKC, full case folding and `toASCII` stay out (each merges mailboxes a
+  provider keeps apart). Stored rows are never rewritten: `check-identifiers!` refuses
+  the boot instead. Do not "simplify" any of the three back.
 
 ## Where the boundary is expected to erode
 

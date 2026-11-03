@@ -195,6 +195,15 @@ challenge is stored under nil or under the printed spelling of two addresses at 
 refusal is about the **type** and never the value, so it asks the store nothing and §11
 is untouched: there is still no branch here on whether an address is known.
 
+**One mailbox, one account** (decided 2026-11-03 by a panel and the user). The default
+normal form is trim, NFC, lower-case under `Locale/ROOT`, and the domain's `xn--` labels
+in Unicode. The rule: two spellings merge only if every delivery of either reaches the
+same mailbox — a merge of two mailboxes hands one person's account to whoever holds the
+other. NFC and the decoded domain satisfy it (IDNA normalises a domain anyway, and the
+local part is never decoded); NFKC, full case folding and the ASCII form do not. Stored
+rows are never rewritten by this library: `check-identifiers!` refuses a boot that has
+any left, and the operator decides, because two rows that become one are two people.
+
 **How an account comes into being, since the three calls do not say.** `redeem!` asks
 the store who an identifier belongs to, and `subject-for` **must not create** — an
 account is the host's act, never a side effect of someone typing an address. That left

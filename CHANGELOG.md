@@ -6,6 +6,26 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.17.0 — 2026-11-03
+
+From the open finding of helpdesk's H5: one mailbox, two spellings, two accounts.
+
+- **Changed:** the default `normalise` is trim, NFC, lower-case, and the domain's `xn--`
+  labels in Unicode. A domain typed composed, decomposed or in punycode is one account.
+  The rule, in the docstring and SPEC: two spellings merge only if every delivery of
+  either reaches the same mailbox — so never NFKC, full case folding, the ASCII form or
+  the local part. `deliver!` now receives the Unicode domain, which sendmail-base encodes.
+  A non-ASCII bootstrap address's subject (a name-based UUID of its spelling) changes.
+- `auth-jdbc/check-identifiers!`: at boot, after the ceremony is built, it refuses to
+  start while `account` or `account_identifier` holds an identifier outside the
+  ceremony's normal form, naming tables, counts and subjects, never an address. It
+  writes nothing.
+- An attach link redeems under the current normal form.
+
+**In your app:** call `(auth-jdbc/check-identifiers! ds ceremony)` at boot; if it
+refuses, re-store those rows through `auth/normalise` by hand, and the addresses your
+own tables keep.
+
 ## 0.16.0 — 2026-10-09
 
 From what building `helpdesk`, a fourth application, cost (its `FRICTION.md`, H16, H17,

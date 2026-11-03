@@ -31,7 +31,7 @@ test belongs in the host.
 
 ```clojure
 ;; deps.edn — from Clojars
-dev.arkaitz/auth-base {:mvn/version "0.16.0"}
+dev.arkaitz/auth-base {:mvn/version "0.17.0"}
 
 ;; or straight from git, to track a commit
 dev.arkaitz/auth-base {:git/url "https://github.com/arkaitz-dev/auth-base"
@@ -180,7 +180,7 @@ which belongs to your stack, so your login view emits the field.
 
 ```clojure
 {:deps {dev.arkaitz/web-base  {:mvn/version "0.17.0"}
-        dev.arkaitz/auth-base {:mvn/version "0.16.0"}}}
+        dev.arkaitz/auth-base {:mvn/version "0.17.0"}}}
 ```
 
 ```clojure
@@ -487,6 +487,20 @@ In a host's tests, `(testing/attach browser "bob@x.test" read-token)` adds an ad
 way a person does — the page, the form, the link opened and pressed — and throws, naming
 where it landed, unless the address was added.
 
+**One mailbox, one account** (since 0.17.0). The default `normalise` trims, applies NFC,
+lower-cases under `Locale/ROOT`, and writes each `xn--` label of the domain in Unicode,
+so `ana@ñandú.es` typed composed, typed decomposed, or typed as `ana@xn--and-6ma2c.es`
+is one account — they are one mailbox, which sendmail-base delivers all three to. The
+rule behind it: two spellings merge only if every delivery of either reaches the same
+mailbox. So never NFKC or full case folding (`ß`/`ss` and `ﬁ`/`fi` may be different
+mailboxes, and merging them would hand one person's account to another), never the ASCII
+form (IDNA2003 rewrites `faß.de` into another domain), and never the local part. Rows
+stored under an older spelling are reached by nobody — their owner would be given a new,
+empty account — so `(auth-jdbc/check-identifiers! ds ceremony)` at boot refuses to start
+while any is left, naming each table, the count and the subjects, never an address. Bring
+each through `(auth/normalise ceremony id)` by hand, deciding yourself where two become
+one; and re-store the addresses your own tables keep the same way.
+
 **Tokens of your own.** `dev.arkaitz.auth-base.token/mint` and `well-formed?` — 32 random
 bytes, URL-safe, minted per call — are the ones the ceremony uses, and serve a host's own
 bearer tokens: a calendar feed, an API key. Keep a hash of it, never the token:
@@ -545,9 +559,11 @@ store never loads it (tested with next.jdbc 1.3.1048, on H2 and SQLite).
 (require '[dev.arkaitz.auth-base.jdbc :as auth-jdbc])
 
 (def ds (auth-jdbc/check! (:datasource db)))  ; at boot: the tables are as this version reads them; returns ds
-(auth/ceremony {:store      (auth-jdbc/store ds)
-                :on-unknown #(auth-jdbc/register! ds %)   ; leave it out and nobody new gets in
-                …})
+(def ceremony
+  (auth/ceremony {:store      (auth-jdbc/store ds)
+                  :on-unknown #(auth-jdbc/register! ds %)   ; leave it out and nobody new gets in
+                  …}))
+(auth-jdbc/check-identifiers! ds ceremony)    ; at boot too: every stored identifier in its normal form
 (auth-jdbc/identifier-for ds subject)         ; the address an account belongs to
 (auth-jdbc/reclaim-expired! ds (System/currentTimeMillis))
 (auth-jdbc/latest-challenge-token ds "ada@example.com")  ; in a host's tests: the link's token
@@ -733,7 +749,7 @@ refused by name.
 ```
 clojure -M:test                       # the whole suite, both proofs included
 clojure -M:test -n <namespace>        # one namespace (several -n allowed)
-clojure -T:build jar                  # target/auth-base-0.16.0.jar
+clojure -T:build jar                  # target/auth-base-0.17.0.jar
 clojure -T:build install              # into ~/.m2
 CLOJARS_USERNAME=… CLOJARS_PASSWORD=<deploy token> clojure -T:build deploy
 ```
