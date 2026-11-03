@@ -448,7 +448,10 @@
     (when (token/well-formed? token)
       (when-let [row (store/take-attach-challenge! store token subject (store/generation store subject))]
         (when (< (clock) (:ab/expires-at row))
-          (let [identifier (:ab/identifier row)]
+          ;; Normalised again: a link issued before the normal form changed carries the
+          ;; spelling of its day, and attached as it is it would be an address no
+          ;; sign-in can reach.
+          (let [identifier (normalise ceremony (:ab/identifier row))]
             (if (store/attach-identifier! store subject identifier)
               (let [primary (store/primary-of store subject)]
                 (when (and primary (not= primary identifier))

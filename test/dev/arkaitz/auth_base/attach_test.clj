@@ -272,3 +272,17 @@
       (is (= 1 (auth/detach! ceremony ada "bob@x.test" nil)) "detach")
       (is (= [nil 1] [(store/subject-for inner "bob@x.test") (get-in (auth/re-establish {} signed 1) [:session :ab/generation])])
           "and re-establish, each the act it names"))))
+
+(deftest a-link-issued-under-an-older-spelling-attaches-the-current-one
+  ;; A row written before 0.17.0's normal form holds its domain decomposed; the store
+  ;; keys by `=`, so attached as it is it would be an address no sign-in can reach.
+  (let [{:keys [ceremony inner] :as f} (fixture)
+        nfc   "bob@\u00f1and\u00fa.es"
+        nfd   "bob@n\u0303andu\u0301.es"
+        token (issue-link! f ada nfc)]
+    (swap! (.-state inner) assoc-in [:attach-challenges token :ab/identifier] nfd)
+    (is (and (not= nfd nfc) (= nfd (get-in @(.-state inner) [:attach-challenges token :ab/identifier])))
+        "witness: the planted row holds the decomposed spelling")
+    (is (= :attached (ceremony/redeem-attach! ceremony ada token ::request)) "the link attaches")
+    (is (= [ada nil] [(store/subject-for inner nfc) (store/subject-for inner nfd)])
+        "under the spelling the ceremony asks for, and not under the old one")))
