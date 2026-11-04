@@ -449,7 +449,15 @@
   table grows with every source that ever tried. The source is stored as its SHA-256:
   not in the clear, and not anonymous (`bucket`). `:clock` is the limiter's own: the
   ceremony's is not handed to a function the way it is to a `:rate-limit` map, so a test
-  that moves time passes its clock here too."
+  that moves time passes its clock here too.
+
+  A call decides and counts at once: it limits attempts, never outcomes. A host limiting
+  its own act asks only once the attempt is one it means to count — after what it can
+  refuse for free, such as a form that no longer matches the page — or a person refused
+  for the host's own reasons spends the limit too. A limit on outcomes (\"five orders an
+  hour\") is a count over the host's own table of them, taken in the transaction that
+  adds one, under a lock that serialises the person's acts; asking here first and
+  counting later would let a person's parallel requests all pass the check."
   [ds {:keys [scope limit window-ms clock]}]
   (let [ds (datasource! ds)]
     ;; A control character in the name could spell the separator below, and with it a

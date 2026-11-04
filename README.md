@@ -700,6 +700,12 @@ are one limit, as two instances of a host want. Count your own by
 `(auth/source-key (:remote-addr request))`, the key the sign-in counts by: one spelling
 per address, and an IPv6 address by its /64.
 
+A call decides and counts at once, so a limiter limits **attempts**: ask only once the
+attempt is one you mean to count, after anything you can refuse for free, or a person
+refused for your own reasons spends the limit too. A limit on **outcomes** ("five orders an
+hour") is not this: count your own table of them in the transaction that adds one, under a
+lock that serialises that person's acts.
+
 The same fixed window, counted in `login_attempt` (migration 005), so every instance sees
 one count and a restart forgets nothing. Two instances racing for the last attempt let
 one through: the count moves by compare-and-set. A refused attempt writes nothing, so a
