@@ -6,6 +6,24 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.18.0 — 2026-11-05
+
+From what building `shop`, a fifth application, cost (its `FRICTION.md`). On web-base
+0.18.0.
+
+- **Changed:** `revoke!` answers the move, `{:ab/subject subject :ab/generation g}`, where
+  it answered nil, and `detach!` answers the same map where it answered the bare
+  generation. `re-establish` takes the move as its third argument and refuses one of
+  another subject, a non-map or a non-integer generation: generations are counters per
+  subject, so another subject's number could keep a session alive past its own
+  revocation. A host that only calls `revoke!` notices nothing; one that passed
+  `detach!`'s number to `re-establish` passes its answer instead (S10).
+- `:welcome?` for the handlers and the plugin, `(fn [return-to])`: asked once a sign-in
+  has registered an account, with the local path it was going to; falsy skips the
+  addresses page's welcome and goes there. Default: always welcome (S12).
+- Documented: a rate limiter limits attempts, never outcomes (S7); revocation ends a
+  person, never a role (S11).
+
 ## 0.17.0 — 2026-11-03
 
 From the open finding of helpdesk's H5: one mailbox, two spellings, two accounts.
