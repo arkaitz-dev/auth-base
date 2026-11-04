@@ -6,6 +6,7 @@
   page a browser ends on — never the handler's return value alone."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
+            [clojure.tools.logging.test :as lt]
             [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.handlers :as handlers]
@@ -14,7 +15,8 @@
             [dev.arkaitz.auth-base.web :as web]
             [dev.arkaitz.web-base :as wb]
             [dev.arkaitz.web-base.testing :as wbt]
-            [ring.middleware.session.memory :as memory])
+            [ring.middleware.session.memory :as memory]
+            [ring.mock.request :as mock])
   (:import [clojure.lang ExceptionInfo]))
 
 (def ^:private ada {:id 1})
@@ -222,6 +224,56 @@
     (is (re-find #"<a class=\"ab-skip\" href=\"/private\">" (body new)) "with a way past it, to where a sign-in lands")
     (is (= [200 "/private"] (landed (signed-in h "ada@x.test"))) "an existing account lands as before")))
 
+(deftest welcome?-decides-the-welcome-for-a-new-account-by-where-it-was-going--and-is-asked-with-a-local-path
+  (let [asked (atom [])
+        {:keys [app ceremony box]} (host {:welcome? (fn [return-to] (swap! asked conj return-to) (not= "/report" return-to))})
+        read  (abt/mailbox-reader ceremony box)
+        going (abt/sign-in (wbt/visit (wbt/browser app) :get "/report") "eve@x.test" read)]
+    (is (= [200 "/report"] (landed going)) "a first sign-in on its way to /report goes straight there")
+    (is (= [200 "/addresses?ab=welcome"] (landed (abt/sign-in (wbt/browser app) "fay@x.test" read)))
+        "a first sign-in going nowhere in particular is welcomed: the predicate answered true for nil")
+    (is (= [200 "/addresses?ab=welcome&next=%2Fprivate"]
+           (landed (abt/sign-in (wbt/visit (wbt/browser app) :get "/private") "gus@x.test" read)))
+        "and one going elsewhere is welcomed, carrying where it was going")
+    (is (= [200 "/addresses?ab=welcome"]
+           (landed (abt/sign-in (wbt/visit (wbt/browser app) :get "/login?next=%2F%2Fevil.test") "hal@x.test" read)))
+        "a next naming another site is no destination: welcomed, as going nowhere")
+    (is (= [200 "/report"] (landed (abt/sign-in (wbt/visit (wbt/browser app) :get "/report") "ada@x.test" read)))
+        "control: an existing account is never welcomed, and goes where it was going")
+    (is (= ["/report" nil "/private" nil] @asked)
+        "asked once per new account, with the local path or nil — never another site's address, never for an existing account")))
+
+(deftest welcome?-is-asked-with-nil-when-the-session-holds-another-sites-address
+  ;; Only the login page writes `:ab/return-to`, and it writes local paths; this plants
+  ;; one it never would, as a host's own code could, to prove the predicate is handed the
+  ;; validated path and never the raw value.
+  (let [asked (atom [])
+        links (atom [])
+        inner (store/in-memory)
+        c     (ceremony/ceremony {:store      inner :notify! (fn [_ _ _])
+                                  :deliver!   (fn [_ link] (swap! links conj link))
+                                  :link       {:base-url "https://x.test" :redeem-path "/login/redeem" :attach-path "/sumar"}
+                                  :on-unknown (fn [identifier]
+                                                (swap! (.-state inner) assoc-in [:subjects identifier] {:id identifier})
+                                                {:id identifier})})
+        hs    (handlers/handlers c {:view (fn [_ _] "") :login-path "/login" :identifiers-path "/addresses"
+                                    :welcome? (fn [return-to] (swap! asked conj return-to) true)})
+        _     (ceremony/issue! c "eve@x.test")
+        r     ((:redeem hs) (assoc (mock/request :post (str "/login/redeem/" (abt/token-of (peek @links))))
+                                   :session {:ab/return-to "//evil.test"}))]
+    (is (= "/addresses?ab=welcome" (get-in r [:headers "Location"])) "witness: a new account, welcomed, with no next")
+    (is (= [nil] @asked) "the predicate saw no destination, never the planted address")))
+
+(deftest a-welcome?-that-throws-is-logged-and-welcomes--advice-never-costs-the-sign-in
+  (let [{:keys [app ceremony box]} (host {:welcome? (fn [_] (throw (ex-info "boom" {})))})
+        read (abt/mailbox-reader ceremony box)]
+    (lt/with-log
+      (is (= [200 "/addresses?ab=welcome"] (landed (abt/sign-in (wbt/browser app) "eve@x.test" read)))
+          "the new account is signed in and welcomed, as by default")
+      (is (= [[:warn "auth-base: :welcome? failed; the account is welcomed, as by default" "boom"]]
+             (mapv (juxt :level :message (comp ex-message :throwable)) (filter #(= :warn (:level %)) (lt/the-log))))
+          "and the failure is one warning, carrying the predicate's exception"))))
+
 (deftest the-handlers-refuse-an-addresses-page-the-ceremony-cannot-serve
   (let [base   {:store (store/in-memory) :deliver! (fn [_ _]) :notify! (fn [_ _ _])
                 :link  {:base-url "https://x.test" :redeem-path "/login/redeem" :attach-path "/sumar"}}
@@ -232,6 +284,7 @@
     (is (= [:link :attach-path] (refuse (update base :link dissoc :attach-path) opts)) "without an attach path")
     (is (= [:identifiers-path] (refuse base (assoc opts :identifiers-path "addresses"))) "a path that is not one")
     (is (= [:recent-ms] (refuse base (assoc opts :recent-ms 0))) "a window that is not one")
+    (is (= [:welcome?] (refuse base (assoc opts :welcome? "no"))) "a welcome? that is not a function")
     (is (map? (handlers/handlers (ceremony/ceremony (dissoc base :notify!)) (dissoc opts :identifiers-path)))
         "control: without the page, none of it is needed")))
 

@@ -54,7 +54,7 @@
 
 (def ^:private handler-keys
   #{:view :login-path :logout-path :revoke-path :after-login :after-logout :field :rate-limit :keep-session
-    :on-logout :on-revoke :identifiers-path :recent-ms})
+    :on-logout :on-revoke :identifiers-path :recent-ms :welcome?})
 
 (def ^:private default-recent-ms
   "How recent a sign-in must be to change how the subject signs in (SPEC §18): long
@@ -209,18 +209,19 @@
   interrupt the hook wrapped in its own exception is still the thread's, and its flag
   is put back for whoever reads it next. The backend renders the host's exception — its
   causes, its message — and that is host code too, so a failure there is logged by the
-  exception's class alone."
-  [hook-name f]
+  exception's class alone. `consequence` says, in the log line, what happened instead.
+  Answers what the hook answered, or nil when it failed."
+  [hook-name consequence f]
   (try (f)
        (catch InterruptedException e (throw e))
        (catch Exception e
          (when (caused-by-interrupt? e)
            (.interrupt (Thread/currentThread)))
-         (try (log/warn e (str "auth-base: " hook-name " failed; the session is ended all the same"))
+         (try (log/warn e (str "auth-base: " hook-name " failed; " consequence))
               (catch Exception _
                 (log/warn (str "auth-base: " hook-name " failed with " (.getName (class e))
-                               ", which could not be logged; the session is ended all the same"))))))
-  nil)
+                               ", which could not be logged; " consequence))))
+         nil)))
 
 (defn handlers
   "The handlers, as a map — the redemption path's GET is `:confirm`, its POST
@@ -273,6 +274,13 @@
                    for another way in. The view is handed `{:identifiers? true …}` for
                    the page and `{:attach-confirm? true …}` / `{:attach-elsewhere? true}`
                    for a link opened in a browser signed in, or not
+    :welcome?      `(fn [return-to])`, asked once a sign-in has registered an account,
+                   with the local path it was going to (or nil): truthy — the default —
+                   lands on the welcome above, falsy goes straight to `return-to` (since
+                   0.18.0). A shop keeps the welcome and skips it for a first sign-in on
+                   the way to its checkout. It is advice and not a control, so it is
+                   asked after the link is spent and an exception it throws is logged,
+                   like the hooks', and welcomes
     :recent-ms     how recent the sign-in must be to add or remove an address
                    (default fifteen minutes)
     :on-revoke     `(fn [request subject])`, called after `revoke!` has moved the
@@ -287,7 +295,7 @@
   applies. CSRF is the host's too, for the same reason: web-base has it, and a
   bare Ring host must bring it."
   [ceremony {:keys [view login-path logout-path revoke-path after-login after-logout field rate-limit
-                    keep-session on-logout on-revoke identifiers-path recent-ms]
+                    keep-session on-logout on-revoke identifiers-path recent-ms welcome?]
              :as   opts}]
   (when-let [unknown (not-empty (remove handler-keys (keys opts)))]
     (fail! (str "unknown option" (when (next unknown) "s") ": " (pr-str (vec (sort unknown)))
@@ -304,7 +312,7 @@
     (ceremony/attaching! ceremony))
   (when-not (or (nil? recent-ms) (pos-int? recent-ms))
     (fail! ":recent-ms must be a positive whole number of milliseconds" [:recent-ms] recent-ms))
-  (doseq [k [:on-logout :on-revoke]]
+  (doseq [k [:on-logout :on-revoke :welcome?]]
     (when-not (or (nil? (get opts k)) (ifn? (get opts k)))
       (fail! (str k " must be a function") [k] (get opts k))))
   ;; A key under :ab/ carried over would be a subject or a generation the session was
@@ -321,6 +329,7 @@
         after-login  (or after-login "/")
         after-logout (or after-logout login-path)
         field        (or field default-field)
+        welcome?     (or welcome? (constantly true))
         decide       (limiter ceremony rate-limit)
         redeem-path  (get-in ceremony [:link :redeem-path])
         subject-of   (session/subject-fn ceremony)
@@ -417,7 +426,8 @@
 
      :redeem
      (fn [request]
-       (let [{subject :ab/subject registered? :ab/registered? :as redeemed}
+       (let [return-to (local-path (get-in request [:session :ab/return-to]))
+             {subject :ab/subject registered? :ab/registered? :as redeemed}
              (some->> (token-of redeem-path (:uri request))
                       (ceremony/redeem-detail! ceremony))]
          (-> (if (some? redeemed)
@@ -425,12 +435,14 @@
                                   (cond-> (response/redirect (cond
                                                                ;; The sign-in that made the account: ask for another
                                                                ;; way in, once, with a way past it (SPEC §18).
-                                                               (and registered? identifiers-path)
+                                                               (and registered? identifiers-path
+                                                                    ;; Advice, never a control: a predicate that
+                                                                    ;; fails welcomes, as 0.17.0 always did.
+                                                                    (not (false? (run-hook! ":welcome?" "the account is welcomed, as by default"
+                                                                                            #(boolean (welcome? return-to))))))
                                                                (str identifiers-path "?ab=welcome"
-                                                                    (some->> (local-path (get-in request [:session :ab/return-to]))
-                                                                             codec/url-encode (str "&next=")))
-                                                               :else (or (local-path (get-in request [:session :ab/return-to]))
-                                                                         after-login))
+                                                                    (some->> return-to codec/url-encode (str "&next=")))
+                                                               :else (or return-to after-login))
                                                              :see-other)
                                     (seq keep-session) (assoc :session (select-keys (:session request) keep-session)))
                                   subject)
@@ -442,7 +454,7 @@
      (fn [request]
        ;; The person asked to leave, and leaving is the security act: a host's hook that
        ;; fails costs its own record of the device, never the sign-out (since 0.10.0).
-       (when on-logout (run-hook! ":on-logout" #(on-logout request)))
+       (when on-logout (run-hook! ":on-logout" "the session is ended all the same" #(on-logout request)))
        (signed-out))}
 
       identifiers-path
@@ -526,7 +538,7 @@
                  (fn [request]
                    (when-some [subject (subject-of request)]
                      (ceremony/revoke! ceremony subject)
-                     (when on-revoke (run-hook! ":on-revoke" #(on-revoke request subject))))
+                     (when on-revoke (run-hook! ":on-revoke" "the session is ended all the same" #(on-revoke request subject))))
                    (signed-out)))))))
 
 (defn routes

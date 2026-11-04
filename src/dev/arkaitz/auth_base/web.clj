@@ -319,7 +319,7 @@
 (defn plugin
   "The plugin value for web-base's `:plugins`. `opts` are the handlers' own —
   `:login-path` (default \"/login\"), `:logout-path` (\"/logout\"), `:revoke-path`,
-  `:identifiers-path` and `:recent-ms` (a second identifier, SPEC §18),
+  `:identifiers-path`, `:recent-ms` and `:welcome?` (a second identifier, SPEC §18),
   `:after-login`, `:after-logout`, `:keep-session`, `:on-logout`, `:on-revoke`, `:view`
   (default `view`) and `:rate-limit` (default five links per source every fifteen
   minutes; an explicit nil sets none) — and `:layouts`, the host's layouts the pages

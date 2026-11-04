@@ -671,6 +671,7 @@ something to name when there is no local identity at all.
 | `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean-or-decision)`, or absent — see below for what a refusal answers; the map also takes `:max-keys`, how many sources it tracks at once (10000), dropping the oldest window when full |
 | `:identifiers-path` | the page where a subject sees, adds and removes its addresses (since 0.13.0; default none); needs the ceremony's `:notify!`, `:link :attach-path` and a store with `Identifiers`, refused at construction without them |
 | `:recent-ms` | how recent the sign-in must be to add or remove an address (default fifteen minutes) |
+| `:welcome?` | `(fn [return-to])`, asked once a sign-in has registered an account: falsy skips the `?ab=welcome` landing and goes straight to `return-to`, the local path it was going to or nil (since 0.18.0; default always welcome). Advice, not a control: an exception it throws is logged and welcomes |
 | `:keep-session` | a set of keys of the session the redemption arrives with that the signed-in session keeps (since 0.7.0) — `#{:locale}` for a language chosen before signing in. The id still rotates and everything else is dropped; `:ab/` keys and the CSRF token are refused. What is kept was written before anyone signed in, possibly by whoever planted the session: check it where you use it, and keep nothing that grants authority |
 
 The rate limit is keyed by `:remote-addr` — the **source**, never the address. Counting
