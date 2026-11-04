@@ -18,7 +18,8 @@
             [ring.middleware.session :as ring-session]
             [ring.middleware.session.memory :as memory]
             [ring.middleware.session.store :as ring-store]
-            [ring.mock.request :as mock]))
+            [ring.mock.request :as mock])
+  (:import [clojure.lang ExceptionInfo]))
 
 (def ^:private now
   "The fixture's clock: a number nothing else here produces, so a stamp that came from
@@ -108,6 +109,89 @@
       (is (= {:within-ms bad} (ex-data (try (session/recent? ceremony signed bad) nil
                                            (catch clojure.lang.ExceptionInfo e e))))
           (str "a window that is not a positive whole number is refused: " (pr-str bad))))))
+
+(def ^:private not-a-move "auth-base: re-establish takes the move revoke! or detach! answered for this session's subject")
+
+(defn- refusal [f]
+  (try (f) :answered (catch ExceptionInfo e [(ex-message e) (ex-data e)])))
+
+(deftest re-establish-refuses-a-move-of-another-subject--whose-number-would-let-the-session-outlive-its-own-revocation
+  (let [{:keys [ceremony]} (fixture)
+        subject-of (session/subject-fn ceremony)
+        a          (with-meta (:session (session/establish ceremony {} {:id 1})) nil)]
+    (is (= [0 0] [(ceremony/generation ceremony {:id 1}) (ceremony/generation ceremony {:id 2})])
+        "witness: two subjects at the same number")
+    (let [b-move (ceremony/revoke! ceremony {:id 2})]
+      (is (= {:ab/subject {:id 2} :ab/generation 1} b-move) "witness: the other subject's move")
+      (is (= [not-a-move {:move-subject? false :generation? true}]
+             (refusal #(session/re-establish {:status 303} a b-move)))
+          "a move of another subject is refused by name, and the data carries no subject")
+      (let [counterfactual (assoc a :ab/generation (:ab/generation b-move))]
+        (ceremony/revoke! ceremony {:id 1})
+        (is (nil? (subject-of {:session a})) "witness: A's own session died with A's revocation")
+        (is (= {:id 1} (subject-of {:session counterfactual}))
+            "control: stamped with B's number, A's session outlives A's own revocation — what the refusal prevents")))
+    (let [a-move (ceremony/revoke! ceremony {:id 1})
+          again  (session/re-establish {} a a-move)]
+      (is (= (assoc a :ab/generation 2) (:session again)) "control: the session's own move is taken")
+      (is (= {:id 1} (subject-of {:session (:session again)})) "and the session lives"))
+    (doseq [[label move data] [["a bare generation" 1 {:move-subject? false :generation? false}]
+                               ["nothing" nil {:move-subject? false :generation? false}]
+                               ["a generation that is not a number" {:ab/subject {:id 1} :ab/generation "1"} {:move-subject? true :generation? false}]
+                               ["a generation and no subject" {:ab/generation 1} {:move-subject? false :generation? true}]]]
+      (is (= [not-a-move data] (refusal #(session/re-establish {} a move))) (str label ": refused by name")))))
+
+(deftest a-subject-who-signs-out-everywhere-keeps-the-browser-that-asked--re-established-with-the-move--and-no-other
+  (let [{:keys [ceremony]} (fixture)
+        subject-of (session/subject-fn ceremony)
+        asking     (with-meta (:session (session/establish ceremony {} {:id 1})) nil)
+        other      (with-meta (:session (session/establish ceremony {} {:id 1})) nil)
+        twin       (hash-map :id 1)]
+    (is (= [{:id 1} {:id 1}] [(subject-of {:session asking}) (subject-of {:session other})]) "witness: two browsers, both live")
+    (is (and (= twin (:ab/subject asking)) (not (identical? twin (:ab/subject asking))))
+        "witness: the subject as a row hands it back — equal, never the same object")
+    (let [move (auth/revoke! ceremony twin)]
+      (is (= {:ab/subject {:id 1} :ab/generation 1} move) "revoke! answers the move it made")
+      (let [again (auth/re-establish {:status 303} asking move)]
+        (is (= (assoc asking :ab/generation 1) (:session again)) "the asking browser's session, at the move's generation")
+        (is (= {:recreate true} (meta (:session again))) "rotated")
+        (is (= {:id 1} (subject-of {:session (:session again)})) "the asking browser goes on")
+        (is (nil? (subject-of {:session other})) "the other browser of the same subject is dead")
+        (is (nil? (subject-of {:session asking}))
+            "and so is the asking browser's old session: the survival is the re-establishment's doing")))))
+
+(defn- bumped-again-after
+  "`inner`, whose first `bump-generation!` is followed, once it has answered, by one
+  more: a \"sign out everywhere\" landing between a revocation and anything read after
+  it, in one thread."
+  [inner]
+  (let [fired (atom false)]
+    (reify
+      store/Store
+      (put-challenge! [this token identifier expires-at] (store/put-challenge! inner token identifier expires-at) this)
+      (take-challenge! [_ token] (store/take-challenge! inner token))
+      (subject-for [_ identifier] (store/subject-for inner identifier))
+      (generation [_ subject] (store/generation inner subject))
+      (bump-generation! [_ subject]
+        (let [g (store/bump-generation! inner subject)]
+          (when (compare-and-set! fired false true) (store/bump-generation! inner subject))
+          g))
+      store/Challenges
+      (identifiers-of [_ subject] (store/identifiers-of inner subject))
+      (drop-challenges! [_ identifiers] (store/drop-challenges! inner identifiers)))))
+
+(deftest a-revocation-landing-right-after-revoke!-ends-the-asking-browser-too--the-move-is-revoke!s-own
+  (let [ceremony   (ceremony/ceremony {:store    (bumped-again-after (store/in-memory {:subjects {"ada@x.test" {:id 1}}}))
+                                       :deliver! (fn [_ _])
+                                       :clock    (constantly now)
+                                       :link     {:base-url "https://x.test" :redeem-path "/entrar"}})
+        subject-of (session/subject-fn ceremony)
+        asking     (with-meta (:session (session/establish ceremony {} {:id 1})) nil)
+        move       (auth/revoke! ceremony {:id 1})]
+    (is (= {:ab/subject {:id 1} :ab/generation 1} move) "the move revoke! made, not the latest")
+    (is (= 2 (ceremony/generation ceremony {:id 1})) "witness: a second revocation landed after it")
+    (is (nil? (subject-of {:session (:session (auth/re-establish {} asking move))}))
+        "and the asking browser, re-established with the move, is ended by it too")))
 
 (deftest end-deletes-the-session--and-ring-really-removes-the-row
   (let [{:keys [ceremony]} (fixture)

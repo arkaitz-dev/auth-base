@@ -35,14 +35,24 @@
     (assoc response :session (vary-meta session assoc :recreate true))))
 
 (defn re-establish
-  "`response` carrying `session` again at `generation`, marked for rotation — after the
-  subject's own act revoked it, as removing an identifier does (SPEC §18), so the
-  browser that acted stays signed in and every other session ends. `generation` is the
-  one that act moved to, never the store's latest: a \"sign out everywhere\" that lands
-  in between must end this session too. Everything else is kept, `:ab/signed-in-at`
-  above all: a fresh stamp here would let attaching and removing renew recency for ever."
-  [response session generation]
-  (assoc response :session (vary-meta (assoc session :ab/generation generation) assoc :recreate true)))
+  "`response` carrying `session` again at the generation `move` names, marked for
+  rotation — after the subject's own act revoked it, as removing an identifier does
+  (SPEC §18), so the browser that acted stays signed in and every other session ends.
+  `move` is what that act answered (`revoke!`, `detach!`: `{:ab/subject …
+  :ab/generation …}`), never the store's latest generation: a \"sign out everywhere\"
+  that lands in between must end this session too. A move of another subject is refused
+  (since 0.18.0): generations are counters per subject, so one subject's number can be
+  another's current one, and the session would outlive a revocation of its own.
+  Everything else is kept, `:ab/signed-in-at` above all: a fresh stamp here would let
+  attaching and removing renew recency for ever."
+  [response session move]
+  (let [{:ab/keys [subject generation]} (when (map? move) move)
+        own?                            (and (some? subject) (= subject (:ab/subject session)))]
+    (when-not (and own? (int? generation))
+      ;; The data says which half failed, and never carries a subject.
+      (throw (ex-info "auth-base: re-establish takes the move revoke! or detach! answered for this session's subject"
+                      {:move-subject? own? :generation? (int? generation)})))
+    (assoc response :session (vary-meta (assoc session :ab/generation generation) assoc :recreate true))))
 
 (defn recent?
   "Whether `session` was established less than `within-ms` ago by the ceremony's

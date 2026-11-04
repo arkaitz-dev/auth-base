@@ -345,6 +345,13 @@
 
 (declare revoke-to!)
 
+(defn- move
+  "A revocation as `session/re-establish` takes it: the generation and whose it is.
+  Generations are counters per subject, so a bare number would fit any other
+  subject's session just as well."
+  [subject generation]
+  {:ab/subject subject :ab/generation generation})
+
 (defn revoke!
   "Ends the subject's access everywhere (SPEC §10). Every session of theirs
   carries the generation it was born with and dies at its next request; there
@@ -358,10 +365,13 @@
   redemption that starts in between finds no link, where the other order would let
   one born after the move keep the new generation; and the move happens whether or
   not the drops did, so a store that fails to drop still ends every session before the
-  failure reaches the caller."
+  failure reaches the caller.
+
+  Answers the move, `{:ab/subject subject :ab/generation g}` (since 0.18.0): what
+  `session/re-establish` takes to keep the browser that asked signed in, when the
+  subject revoked their own sessions."
   [ceremony subject]
-  (revoke-to! ceremony subject)
-  nil)
+  (move subject (revoke-to! ceremony subject)))
 
 (defn- revoke-to!
   "`revoke!`, answering the generation the subject moved to."
@@ -460,12 +470,13 @@
               :taken)))))))
 
 (defn detach!
-  "Removes `identifier` from `subject`'s and answers the generation the subject moved
-  to, or nil when nothing was removed; the primary never is. A removal drops that
+  "Removes `identifier` from `subject`'s and answers the move — `revoke!`'s
+  `{:ab/subject … :ab/generation …}` — or nil when nothing was removed; the primary
+  never is. A removal drops that
   address's pending sign-in links, revokes the subject — an address is removed because
   its mailbox was lost, and the sessions opened through it are the subject's — and
-  tells the primary (SPEC §18). The handler re-establishes the session that asked at
-  that generation, keeping when it signed in."
+  tells the primary (SPEC §18). The handler re-establishes the session that asked with
+  that move, keeping when it signed in."
   [{:keys [normalise notify!] :as ceremony} subject identifier request]
   (let [store (attaching! ceremony)]
     (when (and (some? subject) (not (bootstrap? subject)) (string? identifier))
@@ -484,4 +495,4 @@
                         (finally
                           (when-let [primary (store/primary-of store subject)]
                             (notify-safely! notify! primary {:ab/kind :detached :ab/identifier identifier} request))))))
-            @moved))))))
+            (move subject @moved)))))))

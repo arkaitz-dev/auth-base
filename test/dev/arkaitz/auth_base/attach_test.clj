@@ -182,7 +182,8 @@
     (reset! sent [])
     (is (= 1 (count (:challenges @(.-state inner)))) "witness: a sign-in link for the address is pending")
     (is (= 3 (ceremony/generation ceremony ada)) "witness: generation 3")
-    (is (= 4 (ceremony/detach! ceremony ada " BOB@x.test " ::request)) "the address is removed, normalised, answering the new generation")
+    (is (= {:ab/subject ada :ab/generation 4} (ceremony/detach! ceremony ada " BOB@x.test " ::request))
+        "the address is removed, normalised, answering the move: this subject at the new generation")
     (is (nil? (store/subject-for inner "bob@x.test")) "and signs in as nobody")
     (is (= {} (:challenges @(.-state inner))) "its pending sign-in link is gone")
     (is (= 4 (ceremony/generation ceremony ada)) "and every session of the subject ends")
@@ -210,7 +211,7 @@
         "the failed drop reaches the caller")
     (is (= 1 (ceremony/generation ceremony ada)) "after the generation moved")))
 
-(deftest a-removal-answers-the-generation-it-moved-to--not-the-latest
+(deftest a-removal-answers-the-move-it-made--not-the-latest-generation
   ;; The notice is sent after the revocation; a "sign out everywhere" that lands then
   ;; must not be the generation the asking browser is re-established at.
   (let [ceremony-box (promise)
@@ -220,7 +221,7 @@
     (deliver ceremony-box ceremony)
     (ceremony/issue-attach! ceremony ada "bob@x.test" nil)
     (ceremony/redeem-attach! ceremony ada (first (keys (:attach-challenges @(.-state inner)))) nil)
-    (is (= 1 (ceremony/detach! ceremony ada "bob@x.test" nil)) "the removal's own generation")
+    (is (= {:ab/subject ada :ab/generation 1} (ceremony/detach! ceremony ada "bob@x.test" nil)) "the removal's own move, not the latest")
     (is (= 2 (ceremony/generation ceremony ada)) "witness: the revocation during the notice moved it again")))
 
 (deftest the-primary-and-other-subjects-addresses-are-never-detached--and-nothing-is-revoked
@@ -244,7 +245,7 @@
     (swap! clock + 400)
     (let [moved (ceremony/detach! ceremony ada "bob@x.test" nil)
           again (session/re-establish {:status 303} signed moved)]
-      (is (= 1 moved) "witness: the removal moved the generation once")
+      (is (= {:ab/subject ada :ab/generation 1} moved) "witness: the removal moved the generation once, and the move names this subject")
       (is (= (assoc signed :ab/generation 1) (:session again))
           "the same session at that generation — its sign-in stamp untouched, so a removal never renews recency")
       (is (= {:recreate true} (meta (:session again))) "rotated, as a session whose revocation it survives must be")
@@ -269,9 +270,10 @@
     (let [token (token-of (:ab/link (second (peek @sent))))
           signed (with-meta (:session (session/establish ceremony {} ada)) nil)]
       (is (= :attached (auth/redeem-attach! ceremony ada token nil)) "redeem")
-      (is (= 1 (auth/detach! ceremony ada "bob@x.test" nil)) "detach")
-      (is (= [nil 1] [(store/subject-for inner "bob@x.test") (get-in (auth/re-establish {} signed 1) [:session :ab/generation])])
-          "and re-establish, each the act it names"))))
+      (let [moved (auth/detach! ceremony ada "bob@x.test" nil)]
+        (is (= {:ab/subject ada :ab/generation 1} moved) "detach")
+        (is (= [nil 1] [(store/subject-for inner "bob@x.test") (get-in (auth/re-establish {} signed moved) [:session :ab/generation])])
+            "and re-establish, each the act it names — detach's answer is what re-establish takes")))))
 
 (deftest a-link-issued-under-an-older-spelling-attaches-the-current-one
   ;; A row written before 0.17.0's normal form holds its domain decomposed; the store

@@ -477,12 +477,12 @@
            :remove
            (fn [request]
              (if-some [subject (subject-of request)]
-               (let [generation (when (recent? request)
-                                  (ceremony/detach! ceremony subject (get (:form-params request) field) request))]
-                 (if generation
+               (let [moved (when (recent? request)
+                             (ceremony/detach! ceremony subject (get (:form-params request) field) request))]
+                 (if moved
                    ;; This browser stays signed in at the generation the removal moved to;
                    ;; every other session of the subject has ended.
-                   (session/re-establish (to-page "removed") (:session request) generation)
+                   (session/re-establish (to-page "removed") (:session request) moved)
                    (to-page nil)))
                (to-login)))
 

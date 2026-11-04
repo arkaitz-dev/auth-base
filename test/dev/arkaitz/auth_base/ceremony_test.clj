@@ -694,7 +694,7 @@
 
 ;; --- revoke ---------------------------------------------------------------
 
-(deftest revoke!-returns-nil-and-moves-only-that-subjects-generation-on
+(deftest revoke!-answers-the-move-and-moves-only-that-subjects-generation-on
   (let [{:keys [ceremony]} (fixture {})]
     (doseq [[label subject]
             [["an ordinary subject" {:id 1}]
@@ -702,14 +702,15 @@
               {:ab/identifier "admin@x.test" :ab/bootstrap? true}]]]
       (is (= 0 (ceremony/generation ceremony subject))
           (str "before anything, generation 0: " label))
-      (is (nil? (ceremony/revoke! ceremony subject))
-          (str "revoke tells the caller nothing: " label))
+      (is (= {:ab/subject subject :ab/generation 1} (ceremony/revoke! ceremony subject))
+          (str "revoke! answers the move: this subject, at the generation it moved to: " label))
       (is (= 1 (ceremony/generation ceremony subject))
           (str "and the generation moved on by one: " label))
       (is (= 0 (ceremony/generation ceremony {:id 99}))
           (str "while another subject's did not — the counter is per subject: " label))
-      (ceremony/revoke! ceremony subject)
-      (ceremony/revoke! ceremony subject)
+      (is (= [{:ab/subject subject :ab/generation 2} {:ab/subject subject :ab/generation 3}]
+             [(ceremony/revoke! ceremony subject) (ceremony/revoke! ceremony subject)])
+          (str "and each revocation answers the one it made: " label))
       (is (= 3 (ceremony/generation ceremony subject))
           (str "and each revocation advances by exactly one: " label)))))
 
@@ -730,7 +731,7 @@
         b1 (link! f "bo@x.test")]
     (is (= {:id 1} (ceremony/redeem! ceremony a0)) "witness: a link of the subject signs in before the revocation")
     (is (= #{a1 a2 y1 b1} (rows f)) "witness: four links wait, two identifiers of one subject and another subject's")
-    (is (nil? (ceremony/revoke! ceremony {:id 1})) "revoke! answers nothing")
+    (is (= {:ab/subject {:id 1} :ab/generation 1} (ceremony/revoke! ceremony {:id 1})) "revoke! answers the move of this subject alone")
     (is (= #{b1} (rows f)) "every link of the subject is gone, both identifiers', and the other subject's stays")
     (is (= [nil nil nil] (mapv #(ceremony/redeem! ceremony %) [a1 a2 y1])) "none of them signs in")
     (is (= {:id 2} (ceremony/redeem! ceremony b1)) "the other subject's still does")
@@ -759,7 +760,8 @@
     (let [l (link! f "ADMIN@x.test")]
       (is (= admin (ceremony/subject-of ceremony "admin@x.test")) "witness: the address is a bootstrap identity")
       (reset! log [])
-      (is (nil? (ceremony/revoke! ceremony admin)) "revoking it does not throw: the store is not asked")
+      (is (= {:ab/subject admin :ab/generation 1} (ceremony/revoke! ceremony admin))
+          "revoking it does not throw — the store is never asked who it is — and the move's subject is the bootstrap identity as the caller named it")
       (is (= [[:drop-challenges! ["admin@x.test"]] [:bump-generation! admin]] @log)
           "its own identifier is dropped, and then its generation moves")
       (is (= [#{} nil] [(rows f) (ceremony/redeem! ceremony l)]) "its link is gone and does not sign in")
@@ -867,7 +869,7 @@
   ;; its link BEFORE the revocation began and reads the generation after it.
   (let [{:keys [parked? exit revoked redemption generation token log]} (revoke-race ceremony/revoke!)]
     (is (and parked? (= :released exit)) (str "witness: the revocation was held between its acts and let go: " exit))
-    (is (nil? revoked) "and finished")
+    (is (= {:ab/subject {:id 1} :ab/generation 1} revoked) "and finished, answering the move its own bump made")
     (is (= [[:identifiers-of {:id 1}] [:drop-challenges! ["ada@x.test"]] [:take-challenge! token] [:generation {:id 1}]
             [:bump-generation! {:id 1}]]
            log)

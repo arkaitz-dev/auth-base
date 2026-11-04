@@ -66,8 +66,11 @@
   ceremony/redeem!)
 
 (def revoke!
-  "`(revoke! ceremony subject)` → nil, and every session of that subject dies
-  at its next request."
+  "`(revoke! ceremony subject)` → the move, `{:ab/subject subject :ab/generation g}`,
+  and every session of that subject dies at its next request. Revocation ends a person,
+  never a role: to take a role away, remove what grants it and leave the sessions be.
+  `re-establish` with the move keeps the browser that asked, when that browser is the
+  subject's own."
   ceremony/revoke!)
 
 (def issue-attach!
@@ -81,9 +84,9 @@
   ceremony/redeem-attach!)
 
 (def detach!
-  "`(detach! ceremony subject identifier request)` → the generation the subject moved
-  to, or nil when nothing was removed — never the primary. A removal revokes the
-  subject and tells the primary; `re-establish` at that generation keeps the asking
+  "`(detach! ceremony subject identifier request)` → the move, as `revoke!` answers
+  it, or nil when nothing was removed — never the primary. A removal revokes the
+  subject and tells the primary; `re-establish` with the move keeps the asking
   browser."
   ceremony/detach!)
 
@@ -127,8 +130,9 @@
   session/end)
 
 (def re-establish
-  "`(re-establish response session generation)` → the response carrying `session` at
-  `generation`, rotated, its sign-in stamp untouched."
+  "`(re-establish response session move)` → the response carrying `session` at the
+  generation of `move` (`revoke!`'s or `detach!`'s answer), rotated, its sign-in stamp
+  untouched. A move of another subject than the session's is refused."
   session/re-establish)
 
 (def recent?

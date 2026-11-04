@@ -378,7 +378,7 @@ its own router — or under none, as `harness/` does with a `case` over the URI.
 (auth/issue!  ceremony identifier)   ; => nil, always, whatever the address is
 (auth/issue!  ceremony identifier request)   ; the same, handing a :deliver-with-request! its request
 (auth/redeem! ceremony token)        ; => a subject, or nil
-(auth/revoke! ceremony subject)      ; => nil, and every session of theirs dies
+(auth/revoke! ceremony subject)      ; => the move, and every session of theirs dies
 ```
 
 `issue!` returns nothing **on purpose**, and never asks the store whether the address
@@ -413,6 +413,19 @@ this browser and in any other, with any store, including the cookie. It also dro
 links issued for that subject and not used yet (since 0.8.0): after a mailbox is
 recovered, those are exactly what its intruder holds. A link asked for before "sign out
 everywhere" no longer works after it; ask for another.
+
+`revoke!` answers the move, `{:ab/subject subject :ab/generation g}` (since 0.18.0).
+`(auth/re-establish response (:session request) move)` keeps the browser that asked
+signed in at that generation, while every other session ends: the "sign out my other
+devices" a host builds for a subject's own sessions (the plugin's `:revoke-path` is "sign
+out everywhere", this browser included). It refuses a move of another subject.
+Generations are counters per subject, so another subject's number could be this
+session's own next one, and the session would outlive its own revocation.
+
+**Revocation ends a person, never a role.** It is for a mailbox that was lost, and it
+ends every session, the person's cart included. To take a role away — a staff member
+removed — delete what grants the role and check it on every request; the person stays
+signed in as whatever else they are.
 
 Its cost is one store read per signed-in request — an indexed read, measured at 9.7 µs
 on SQLite, after the one your session store already makes — and its bound is that
