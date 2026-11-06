@@ -179,7 +179,7 @@ which belongs to your stack, so your login view emits the field.
 ## Installed in web-base: the standard pages
 
 ```clojure
-{:deps {dev.arkaitz/web-base  {:mvn/version "0.18.0"}
+{:deps {dev.arkaitz/web-base  {:mvn/version "0.21.0"}
         dev.arkaitz/auth-base {:mvn/version "0.18.0"}}}
 ```
 
@@ -361,7 +361,11 @@ Four things worth knowing, all of them proved by the demo's tests:
   shell on the login page nests the lot under a parent carrying `:wb/layouts`, as
   above. That is reitit's composition; neither module has to agree to it.
 - **Your view emits the CSRF field.** `(security/csrf-field request)` inside the login
-  view. web-base refuses the POST without it, before this module ever runs.
+  view. Since web-base 0.21.0 it renders nothing for an anonymous visitor, whose session
+  holds no token: web-base checks that POST by the browser's `Sec-Fetch-Site` or
+  `Origin` instead, and refuses one from another site — the confirmation page's POST,
+  login CSRF, included — before this module ever runs. A signed-in session holds a
+  token from its rotation and needs it, as before.
 - **The gate is web-base's.** `:wb/gate wb/subject-present?` on the parent of your
   private routes — `["" {:wb/gate wb/subject-present?} ["/" …] ["/tasks" …]]` — so a
   route added there later is gated without saying so, and the public ones, auth's

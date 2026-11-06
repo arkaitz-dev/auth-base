@@ -27,25 +27,35 @@
      :ceremony ceremony
      :app      (app/handler ceremony {:session-key (wb-session/generate-key) :secure? false})}))
 
+(defn- from-this-site
+  "The headers a browser sends with a form posted from this site's own page — what
+  web-base checks a session holding no CSRF token by (since web-base 0.21.0)."
+  [request]
+  (-> request
+      (mock/header "sec-fetch-site" "same-origin")
+      (mock/header "origin" "http://localhost")))
+
 (defn- ask-for-a-link
-  "A person filling in the login form, CSRF token and all — which is web-base's
-  and which the host's view had to emit, because the module does not render."
+  "A person filling in the login form. An anonymous page carries no CSRF token since
+  web-base 0.21.0: the POST is vouched for by the browser's origin headers, which are
+  web-base's to check and which the host's view has nothing to emit for."
   [{:keys [app]} identifier]
-  (let [page  (app (mock/request :get "/entrar"))
-        token (wbt/csrf-token page)]
-    (is (some? token) "precondition: the login page carried a CSRF token")
-    [page (app (-> (mock/request :post "/entrar" {"identifier" identifier
-                                                  "__anti-forgery-token" token})
-                   (wbt/with-cookies page)))]))
+  (let [page (app (mock/request :get "/entrar"))]
+    (is (nil? (wbt/csrf-token page)) "precondition: the anonymous login page carries no CSRF token")
+    [page (app (-> (mock/request :post "/entrar" {"identifier" identifier})
+                   (wbt/with-cookies page)
+                   from-this-site))]))
 
 (defn- open-link
-  "A person opening the emailed link and pressing its button: the GET shows the
-  confirmation page, whose form carries this browser's CSRF token; the POST signs in.
-  Answers `[page response]`."
+  "A person, not yet signed in, opening the emailed link and pressing its button: the
+  GET shows the confirmation page, which carries no CSRF token for an anonymous
+  browser; the POST, sent from that page, signs in. Answers `[page response]`."
   [app path browser]
   (let [page (app (-> (mock/request :get path) (wbt/with-cookies browser)))]
-    [page (app (-> (mock/request :post path {"__anti-forgery-token" (wbt/csrf-token page)})
-                   (wbt/with-cookies browser)))]))
+    (is (nil? (wbt/csrf-token page)) "precondition: the anonymous confirmation page carries no CSRF token")
+    [page (app (-> (mock/request :post path)
+                   (wbt/with-cookies browser)
+                   from-this-site))]))
 
 (defn- link-path [links]
   (subs (:link (last @links)) (count base)))
@@ -81,7 +91,8 @@
         page (:body (app (mock/request :get "/entrar")))]
     (is (str/includes? page "<!DOCTYPE html>") "a whole document")
     (is (str/includes? page "auth-base × web-base") "wearing the host's shell")
-    (is (str/includes? page "__anti-forgery-token") "carrying web-base's CSRF field")
+    (is (not (str/includes? page "__anti-forgery-token"))
+        "carrying no CSRF field: an anonymous page holds no token since web-base 0.21.0, and its POST is checked by origin")
     (is (str/includes? page "Enviarme un enlace") "in auth-base's Spanish, the host's default locale")
     (is (str/includes? page "si no lo fuera, esta página diría quién tiene cuenta")
         "with the host's own sentence put over the dictionary")
@@ -90,15 +101,38 @@
     (is (str/includes? page "name=\"identifier\"")
         "with its input named as the POST reads it, as the state told the view")))
 
-(deftest a-post-without-web-bases-csrf-token-is-refused-before-the-module-sees-it
-  ;; The module owns none of this, and must not: the token lives in the
-  ;; session, which belongs to the host's stack.
+(deftest a-cross-site-post-is-refused-by-web-base-before-the-module-sees-it
+  ;; The module owns none of this, and must not: CSRF is the host's stack's. An
+  ;; anonymous session holds no token since web-base 0.21.0, so what refuses a forged
+  ;; form is the browser's word that it came from another site.
   (let [{:keys [app links]} (fresh)
-        page     (app (mock/request :get "/entrar"))
-        forged   (app (-> (mock/request :post "/entrar" {"identifier" "ada@example.test"})
-                          (wbt/with-cookies page)))]
+        forged (app (-> (mock/request :post "/entrar" {"identifier" "ada@example.test"})
+                        (mock/header "sec-fetch-site" "cross-site")
+                        (mock/header "origin" "https://evil.test")))]
     (is (= 403 (:status forged)) "web-base refuses it")
-    (is (= [] @links) "and no link was ever composed, so the module never ran")))
+    (is (= [] @links) "and no link was ever composed, so the module never ran")
+    (let [[_ sent] (ask-for-a-link {:app app} "ada@example.test")]
+      (is (= [303 1] [(:status sent) (count @links)])
+          "control: the same form from this site's own page is let through, so the 403 was the origin"))))
+
+(deftest a-cross-site-post-to-the-link-is-refused-and-spends-nothing
+  ;; Login CSRF: a page elsewhere that posts an attacker's own link from the victim's
+  ;; browser would sign the victim in as the attacker. Only the POST redeems (0.8.0), and
+  ;; with no session there is no token to check, so the origin check is all that stands
+  ;; between that page and a sign-in.
+  (let [{:keys [app links] :as demo} (fresh)
+        [_ sent] (ask-for-a-link demo "ada@example.test")
+        path     (link-path links)
+        forged   (app (-> (mock/request :post path)
+                          (mock/header "sec-fetch-site" "cross-site")
+                          (mock/header "origin" "https://evil.test")))]
+    (is (= [303 "/entrar?ab=sent"] [(:status sent) (get-in sent [:headers "Location"])])
+        "witness: a link was issued")
+    (is (= 403 (:status forged)) "a POST to the link from another site is refused")
+    (is (empty? (wbt/cookies forged)) "and signs nobody in: no session cookie")
+    (let [[_ opened] (open-link app path sent)]
+      (is (= "/privado" (get-in opened [:headers "Location"]))
+          "and spent nothing: the same link, pressed on this site's own page, still signs in"))))
 
 (deftest revocation-reaches-a-session-established-by-the-module
   (let [{:keys [app links ceremony] :as demo} (fresh)]

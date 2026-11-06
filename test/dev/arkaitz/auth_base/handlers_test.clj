@@ -746,7 +746,11 @@
         ceremony   (ceremony/ceremony {:store    (store/in-memory {:subjects {"ada@x.test" {:id 1}}})
                                        :deliver! (fn [id link] (swap! deliveries conj [id link]))
                                        :link     {:base-url "https://x.test" :redeem-path "/entrar"}})
-        sessions   (atom {})
+        ;; A token is born only at a rotation since web-base 0.21.0, so the session that
+        ;; holds one before the login is planted — as whoever fixes a session would.
+        t0         "T0-planted"
+        s0         "s0-planted"
+        sessions   (atom {s0 {:ring.middleware.anti-forgery/anti-forgery-token t0}})
         app        (wb/handler
                     {:routes     (into (handlers/routes ceremony {:view         (fn [r _] [:form (security/csrf-field r)])
                                                                   :login-path   "/login"
@@ -760,10 +764,8 @@
         post       (fn [path sid token params]
                      (app (-> (mock/request :post path (assoc params "__anti-forgery-token" token))
                               (mock/header "Cookie" (str "ring-session=" sid)))))
-        page0      (app (mock/request :get "/login"))
-        t0         (wbt/csrf-token page0)
-        s0         (session-cookie-of page0)]
-    (is (and (some? t0) (some? s0)) "witness: the login page gave a session and a token")
+        page0      (app (-> (mock/request :get "/login") (mock/header "Cookie" (str "ring-session=" s0))))]
+    (is (= t0 (wbt/csrf-token page0)) "witness: the login page renders the session's token")
     (is (= 303 (:status (post "/lang" s0 t0 {}))) "control: the pre-login token works before the login")
     (is (= {:ring.middleware.anti-forgery/anti-forgery-token t0 :locale "eu" :planted true} (get @sessions s0))
         "precondition: the anonymous session holds the token, the language and a marker")
@@ -777,13 +779,17 @@
       (is (and (some? s1) (not= s0 s1)) "and rotated the id")
       (is (nil? (get @sessions s0)) "the old session is gone")
       (is (int? (get-in @sessions [s1 :ab/signed-in-at])) "witness: the session carries its sign-in stamp")
-      (is (= {:locale "eu" :ab/subject {:id 1} :ab/generation 0} (dissoc (get @sessions s1) :ab/signed-in-at))
-          "the kept key crossed the rotation; the marker did not (auth-base copied only what it was told), nor the token (web-base minted none for a redirect)")
-      (is (= 403 (:status (post "/lang" s1 t0 {}))) "the pre-login token does not work in the signed-in session")
-      (let [home (app (-> (mock/request :get "/home") (mock/header "Cookie" (str "ring-session=" s1))))
-            t1   (wbt/csrf-token home)]
-        (is (and (some? t1) (not= t0 t1)) "the first page after the login carries a token of its own")
-        (is (= 303 (:status (post "/lang" s1 t1 {}))) "control: which works, so the 403 above is the rotation")))))
+      (is (= {:locale "eu" :ab/subject {:id 1} :ab/generation 0}
+             (dissoc (get @sessions s1) :ab/signed-in-at :ring.middleware.anti-forgery/anti-forgery-token))
+          "the kept key crossed the rotation; the marker did not (auth-base copied only what it was told)")
+      (let [minted (get-in @sessions [s1 :ring.middleware.anti-forgery/anti-forgery-token])]
+        (is (and (string? minted) (not= t0 minted))
+            "nor the token: web-base mints the signed-in session one of its own at the rotation")
+        (is (= 403 (:status (post "/lang" s1 t0 {}))) "the pre-login token does not work in the signed-in session")
+        (let [home (app (-> (mock/request :get "/home") (mock/header "Cookie" (str "ring-session=" s1))))
+              t1   (wbt/csrf-token home)]
+          (is (= minted t1) "the first page after the login carries the token minted at the rotation")
+          (is (= 303 (:status (post "/lang" s1 t1 {}))) "control: which works, so the 403 above is the rotation"))))))
 
 ;; --- :deliver-with-request! ---------------------------------------------------------
 
@@ -836,7 +842,11 @@
         ceremony (ceremony/ceremony {:store    (store/in-memory {:subjects {"ada@x.test" {:id 1}}})
                                      :deliver! (abt/deliver-into box)
                                      :link     {:base-url "https://x.test" :redeem-path "/entrar"}})
-        sessions (atom {})
+        ;; A token is born only at a rotation since web-base 0.21.0; a session holding one
+        ;; and no subject — one whose subject was revoked — is planted.
+        s0       "s0-planted"
+        t0       "T0-planted"
+        sessions (atom {s0 {:ring.middleware.anti-forgery/anti-forgery-token t0}})
         app      (wb/handler
                   {:routes     (into (handlers/routes ceremony {:view        (fn [r _] [:form (security/csrf-field r)])
                                                                 :login-path  "/login"
@@ -847,12 +857,10 @@
                    :login-path "/login"
                    :session    {:store (memory/memory-store sessions)}})
         with     (fn [request sid] (cond-> request sid (mock/header "Cookie" (str "ring-session=" sid))))
-        page0    (app (mock/request :get "/login"))
-        s0       (session-cookie-of page0)
-        t0       (wbt/csrf-token page0)
         refused  (app (with (mock/request :get "/orgs/7?tab=a") s0))
         login    (get-in refused [:headers "Location"])]
-    (is (and (some? s0) (some? t0)) "witness: an anonymous session holding a token")
+    (is (= t0 (wbt/csrf-token (app (with (mock/request :get "/login") s0))))
+        "witness: a session with no subject holding a token")
     (is (= "/login?next=%2Forgs%2F7%3Ftab%3Da" login) "witness: the gate named the page it refused")
     (is (= 200 (:status (app (with (mock/request :get login) s0)))) "the login page, with next")
     (is (= {:ring.middleware.anti-forgery/anti-forgery-token t0 :ab/return-to "/orgs/7?tab=a"} (get @sessions s0))

@@ -150,8 +150,9 @@
 (defn open-link
   "The browser `b` after opening the link that carries `token` and pressing the
   confirmation page's button, as a person does: a GET, which spends nothing, and the
-  POST that redeems, carrying the page's CSRF token. `opts` names `:redeem-path` when it
-  is not \"/login/redeem\"."
+  POST that redeems, as the page sends it — with its CSRF token when the session holds
+  one, checked by origin when it holds none. `opts` names `:redeem-path` when it is not
+  \"/login/redeem\"."
   ([b token] (open-link b token {}))
   ([b token opts]
    (let [link (str (:redeem-path (merge walk-defaults opts)) "/" token)]

@@ -187,7 +187,9 @@
 
 (defn sign-in-form
   "The form that asks for a link: posts to the state's `:action`, names its input the
-  state's `:field`, and carries the CSRF token. `maxlength` is the ceremony's bound."
+  state's `:field`, and carries the CSRF token when the session holds one — an anonymous
+  one holds none, and web-base checks its POST by origin. `maxlength` is the ceremony's
+  bound."
   [request {:keys [action field]}]
   [:form.ab-form {:method "post" :action action}
    (security/csrf-field request)
@@ -308,8 +310,8 @@
 
 (defn identity
   "For web-base's shell `:identity` slot: `sign-out` when the request has a subject, a
-  link to the login page when it has none — a link and not a form, so an anonymous page
-  writes no CSRF token into a session. `opts` as for `sign-out`."
+  link to the login page when it has none — a link and not a form, since an anonymous
+  visitor has nothing to post. `opts` as for `sign-out`."
   ([request] (identity request {}))
   ([request opts]
    (if (some? (:wb/subject request))
