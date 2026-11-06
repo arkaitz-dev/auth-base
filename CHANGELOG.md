@@ -6,7 +6,7 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
-## 0.19.0 — unreleased
+## 0.19.0 — 2026-11-06
 
 From what building `academy`, a sixth application, cost (its `FRICTION.md`).
 
@@ -21,6 +21,7 @@ From what building `academy`, a sixth application, cost (its `FRICTION.md`).
 - Documented: `:on-revoke` runs on the sign-out-everywhere POST only, never on a
   `revoke!` the host calls, and may be handed a bootstrap identity's map (A30); the first
   sign-in under an `:identifiers-path` lands on the welcome, not on `:after-login` (A4).
+- On web-base 0.22.0.
 
 ## 0.18.0 — 2026-11-05
 
