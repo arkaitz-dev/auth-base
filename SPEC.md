@@ -71,7 +71,8 @@ so, and the ceremony, handlers, session, stores and facade run under any Ring ho
 the harness keeps proving. What is given up is the classpath: every consumer now
 receives web-base and what it brings, which every host of the set already had. Nothing
 standard is a cage — every state's view is a public function, `:view` replaces the
-whole, and a host overrides one state by composing — because the Django trap the rule
+sign-in and `:identifiers-view` the addresses pages (two since 2026-11-06, §18), and a
+host overrides one state by composing — because the Django trap the rule
 below names was a module that could not be replaced, not one that could be installed.
 
 The rule as it stood until then, kept as the record of why it was drawn:
@@ -672,6 +673,12 @@ decided on 2026-10-03.
 - 2026-10-07: **the prompt to add another way in is shown at the sign-in that created the
   account**, with "not now"; afterwards the page is reached from the identity slot. No
   state is kept for it.
+- 2026-11-06: **the addresses pages have a view of their own**, `:identifiers-view`, and
+  `:view` is handed the five sign-in states only. With one view, a branded sign-in
+  written from the README's example drew its form on the addresses page, posting to it:
+  every address typed there was sent an attach link (the academy's A3). The plugin
+  defaults both to the standard view; the bare handlers require the second under an
+  `:identifiers-path`, since they cannot load it.
 
 **How it is built:**
 

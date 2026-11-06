@@ -2,12 +2,16 @@
   "Ring handlers over the ceremony, and the same handlers as reitit route data
   for a host that wants them mounted rather than wired.
 
-  The host supplies **one** view. It is called with the request and one of five
-  states — `{}`, `{:sent? true}`, `{:spent? true}`, `{:limited? true}`, `{:confirm? true}`
-  — or, with an `:identifiers-path`, three more: `{:identifiers? true …}`,
-  `{:attach-confirm? true …}` and `{:attach-elsewhere? true}` (since 0.13.0) — and returns
-  whatever that host's renderer accepts as a `:body`: Hiccup under web-base, a string
-  under plain Ring. That is the whole of what this module knows about pages.
+  The host supplies **one** view for signing in. It is called with the request and one of
+  five states — `{}`, `{:sent? true}`, `{:spent? true}`, `{:limited? true}`,
+  `{:confirm? true}` — and returns whatever that host's renderer accepts as a `:body`:
+  Hiccup under web-base, a string under plain Ring. With an `:identifiers-path`, a second
+  one, `:identifiers-view`, is called with the other three: `{:identifiers? true …}`,
+  `{:attach-confirm? true …}` and `{:attach-elsewhere? true}` (since 0.13.0; a view of
+  their own since 0.19.0). They are two because a sign-in view that draws its form for any
+  state it does not know would draw it on the addresses page, posting to that page — a
+  form that mails an attach link to whatever is typed. That is the whole of what this
+  module knows about pages.
   `:limited?` is the sign-in form refused by the rate limit, answered with status 429
   and the page, so the person sees the form and a reason rather than a browser's own
   error page. `:confirm?` is what opening a link shows: one button, a form posting to
@@ -53,7 +57,7 @@
 (def ^:private default-field "identifier")
 
 (def ^:private handler-keys
-  #{:view :login-path :logout-path :revoke-path :after-login :after-logout :field :rate-limit :keep-session
+  #{:view :identifiers-view :login-path :logout-path :revoke-path :after-login :after-logout :field :rate-limit :keep-session
     :on-logout :on-revoke :identifiers-path :recent-ms :welcome?})
 
 (def ^:private default-recent-ms
@@ -102,7 +106,7 @@
     {}))
 
 (def ^:private identifiers-flags
-  "What `?ab=` may say on the identifiers page, each a state key the view reads."
+  "What `?ab=` may say on the identifiers page, each a state key `:identifiers-view` reads."
   {"sent" :sent? "added" :added? "taken" :taken? "removed" :removed? "spent" :spent? "welcome" :welcome?})
 
 (defn- token-of
@@ -228,8 +232,13 @@
   `:redeem`, and `:revoke` is there only under a `:revoke-path`. Mount them yourself,
   or hand the same options to `routes`.
 
-    :view          (fn [request state]) → a `:body` (required); every state
-                   carries `:action` and `:field`, see the namespace docstring
+    :view          (fn [request state]) → a `:body` (required), called with the five
+                   sign-in states only; every state carries `:action` and `:field`, see
+                   the namespace docstring
+    :identifiers-view
+                   (fn [request state]) → a `:body`, called with the three states of the
+                   addresses page and its attach link (since 0.19.0); required under
+                   an `:identifiers-path`
     :login-path    where the form lives (required)
     :logout-path   where the logout POST goes (default \"/logout\")
     :revoke-path   where a POST signs the subject out everywhere — `revoke!`, then this
@@ -271,9 +280,10 @@
                    implementing `Identifiers`, and is refused here without them. The
                    attach link's GET and POST are then mounted under `:attach-path`, and
                    the sign-in that registers an account lands here, `?ab=welcome`, asking
-                   for another way in. The view is handed `{:identifiers? true …}` for
-                   the page and `{:attach-confirm? true …}` / `{:attach-elsewhere? true}`
-                   for a link opened in a browser signed in, or not
+                   for another way in. `:identifiers-view` is handed
+                   `{:identifiers? true …}` for the page and `{:attach-confirm? true …}` /
+                   `{:attach-elsewhere? true}` for a link opened in a browser signed in,
+                   or not
     :welcome?      `(fn [return-to])`, asked once a sign-in has registered an account,
                    with the local path it was going to (or nil): truthy — the default —
                    lands on the welcome above, falsy goes straight to `return-to` (since
@@ -294,7 +304,7 @@
   the body — `ring.middleware.params/wrap-params`, which web-base already
   applies. CSRF is the host's too, for the same reason: web-base has it, and a
   bare Ring host must bring it."
-  [ceremony {:keys [view login-path logout-path revoke-path after-login after-logout field rate-limit
+  [ceremony {:keys [view identifiers-view login-path logout-path revoke-path after-login after-logout field rate-limit
                     keep-session on-logout on-revoke identifiers-path recent-ms welcome?]
              :as   opts}]
   (when-let [unknown (not-empty (remove handler-keys (keys opts)))]
@@ -303,11 +313,16 @@
            (vec (sort unknown)) nil))
   (when-not (ifn? view)
     (fail! ":view must be a function of [request state]" [:view] view))
+  (when-not (or (nil? identifiers-view) (ifn? identifiers-view))
+    (fail! ":identifiers-view must be a function of [request state]" [:identifiers-view] identifiers-view))
   (check-path! :login-path login-path)
   (some->> logout-path (check-path! :logout-path))
   (some->> revoke-path (check-path! :revoke-path))
   (when identifiers-path
     (check-path! :identifiers-path identifiers-path)
+    (when (nil? identifiers-view)
+      (fail! ":identifiers-path needs an :identifiers-view, a function of [request state]"
+             [:identifiers-view] nil))
     ;; Every piece the acts need, refused at boot rather than at somebody's click.
     (ceremony/attaching! ceremony))
   (when-not (or (nil? recent-ms) (pos-int? recent-ms))
@@ -464,7 +479,7 @@
            ;; The subject is `subject-fn`'s, every time: a revoked session names nobody.
            (fn [request]
              (if-some [subject (subject-of request)]
-               (no-store (response/response (view request (page-state request subject {}))))
+               (no-store (response/response (identifiers-view request (page-state request subject {}))))
                (to-login)))
 
            :add
@@ -476,7 +491,7 @@
                  ;; any address at will.
                  (let [{:keys [allowed? retry-after-ms]} (decide (rate-limit/source-key (:remote-addr request)))]
                    (if-not allowed?
-                     (cond-> (response/status (response/response (view request (page-state request subject {:limited? true}))) 429)
+                     (cond-> (response/status (response/response (identifiers-view request (page-state request subject {:limited? true}))) 429)
                        retry-after-ms (response/header "Retry-After" (str (rate-limit/retry-after-seconds retry-after-ms)))
                        true           no-store)
                      (let [identifier (get (:form-params request) field)]
@@ -509,11 +524,11 @@
                      (if subject (to-page "spent") spent)
 
                      (and (some? subject) (not (:ab/bootstrap? subject)))
-                     (response/response (view request {:attach-confirm? true :action (:uri request)
+                     (response/response (identifiers-view request {:attach-confirm? true :action (:uri request)
                                                        :account (store/primary-of (:store ceremony) subject)}))
 
                      :else
-                     (response/response (view request {:attach-elsewhere? true :login login-path})))
+                     (response/response (identifiers-view request {:attach-elsewhere? true :login login-path})))
                    (response/header "Referrer-Policy" "no-referrer")
                    no-store)))
 

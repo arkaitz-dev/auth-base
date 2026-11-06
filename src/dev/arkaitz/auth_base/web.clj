@@ -20,9 +20,10 @@
     over this one key by key — `:ab/sent-detail` and `:ab/note` are empty until a host
     fills them;
   - the host's layouts, under `:layouts`: the pages render inside them;
-  - `:view`, a whole view of the host's, which may call the parts below for the states
-    it does not redraw — `(if (:confirm? state) (mine request state) (web/view request
-    state))`.
+  - `:view`, a whole sign-in view of the host's, handed the five sign-in states, which
+    may call the parts below for the states it does not redraw — `(if (:confirm? state)
+    (mine request state) (web/view request state))` — and `:identifiers-view`, the same
+    for the addresses page's three states. Each defaults to `view`.
 
   The markup is a contract: `section.ab.ab-state-<state>` with `data-ab-state`, the state
   being `form`, `sent`, `spent`, `limited` or `confirm` — or `identifiers`,
@@ -323,7 +324,8 @@
   `:login-path` (default \"/login\"), `:logout-path` (\"/logout\"), `:revoke-path`,
   `:identifiers-path`, `:recent-ms` and `:welcome?` (a second identifier, SPEC §18),
   `:after-login`, `:after-logout`, `:keep-session`, `:on-logout`, `:on-revoke`, `:view`
-  (default `view`) and `:rate-limit` (default five links per source every fifteen
+  and `:identifiers-view` (both default `view`; the first is handed the five sign-in
+  states, the second the addresses page's three) and `:rate-limit` (default five links per source every fifteen
   minutes; an explicit nil sets none) — and `:layouts`, the host's layouts the pages
   render inside, which a plugin's routes do not inherit from the host's.
 
@@ -342,7 +344,7 @@
   (when-not (or (nil? layouts) (and (vector? layouts) (every? #(or (fn? %) (var? %)) layouts)))
     (throw (ex-info "auth-base web: :layouts must be a vector of layout functions"
                     {:config-key [:layouts] :value layouts})))
-  (let [opts (merge defaults {:view view} (dissoc opts :layouts))]
+  (let [opts (merge defaults {:view view :identifiers-view view} (dissoc opts :layouts))]
     {:wb.plugin/name :auth-base
      :routes         [(into ["" (cond-> {:middleware [[session/wrap-revoked ceremony]]}
                                   (seq layouts) (assoc :wb/layouts layouts))]

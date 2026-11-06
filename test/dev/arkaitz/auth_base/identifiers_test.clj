@@ -10,10 +10,13 @@
             [dev.arkaitz.auth-base :as auth]
             [dev.arkaitz.auth-base.ceremony :as ceremony]
             [dev.arkaitz.auth-base.handlers :as handlers]
+            [dev.arkaitz.auth-base.session :as session]
             [dev.arkaitz.auth-base.store :as store]
             [dev.arkaitz.auth-base.testing :as abt]
             [dev.arkaitz.auth-base.web :as web]
             [dev.arkaitz.web-base :as wb]
+            ;; Used by the README's example view, which is evaluated in this namespace.
+            [dev.arkaitz.web-base.security :as security]
             [dev.arkaitz.web-base.testing :as wbt]
             [ring.middleware.session.memory :as memory]
             [ring.mock.request :as mock])
@@ -256,7 +259,8 @@
                                   :on-unknown (fn [identifier]
                                                 (swap! (.-state inner) assoc-in [:subjects identifier] {:id identifier})
                                                 {:id identifier})})
-        hs    (handlers/handlers c {:view (fn [_ _] "") :login-path "/login" :identifiers-path "/addresses"
+        hs    (handlers/handlers c {:view (fn [_ _] "") :identifiers-view (fn [_ _] "") :login-path "/login"
+                                    :identifiers-path "/addresses"
                                     :welcome? (fn [return-to] (swap! asked conj return-to) true)})
         _     (ceremony/issue! c "eve@x.test")
         r     ((:redeem hs) (assoc (mock/request :post (str "/login/redeem/" (abt/token-of (peek @links))))
@@ -277,15 +281,28 @@
 (deftest the-handlers-refuse-an-addresses-page-the-ceremony-cannot-serve
   (let [base   {:store (store/in-memory) :deliver! (fn [_ _]) :notify! (fn [_ _ _])
                 :link  {:base-url "https://x.test" :redeem-path "/login/redeem" :attach-path "/sumar"}}
-        opts   {:view (fn [_ _] "") :login-path "/login" :identifiers-path "/addresses"}
+        opts   {:view (fn [_ _] "") :identifiers-view (fn [_ _] "") :login-path "/login" :identifiers-path "/addresses"}
         refuse (fn [config opts] (try (handlers/handlers (ceremony/ceremony config) opts) nil
-                                      (catch ExceptionInfo e (:config-key (ex-data e)))))]
+                                      (catch ExceptionInfo e (:config-key (ex-data e)))))
+        said   (fn [config opts] (try (handlers/handlers (ceremony/ceremony config) opts) nil
+                                      (catch ExceptionInfo e (ex-message e))))]
+    ;; First, so a key the handlers do not list — refused as unknown, under the same
+    ;; config-key — reds here and not as a refusal below.
+    (is (map? (handlers/handlers (ceremony/ceremony base) opts)) "control: everything given, the page is served")
+    (is (= [:identifiers-view] (refuse base (dissoc opts :identifiers-view)))
+        "the page with no view of its own: never left to the five-state sign-in view")
+    (is (= "auth-base handlers: :identifiers-path needs an :identifiers-view, a function of [request state]"
+           (said base (dissoc opts :identifiers-view)))
+        "and the refusal says what is missing, not that a key is unknown")
+    (is (= [:identifiers-view] (refuse base (assoc opts :identifiers-view "no"))) "a view that is not a function")
+    (is (= [:identifiers-view] (refuse base (-> opts (dissoc :identifiers-path) (assoc :identifiers-view "no"))))
+        "is refused without the page too")
     (is (= [:notify!] (refuse (dissoc base :notify!) opts)) "without :notify!")
     (is (= [:link :attach-path] (refuse (update base :link dissoc :attach-path) opts)) "without an attach path")
     (is (= [:identifiers-path] (refuse base (assoc opts :identifiers-path "addresses"))) "a path that is not one")
     (is (= [:recent-ms] (refuse base (assoc opts :recent-ms 0))) "a window that is not one")
     (is (= [:welcome?] (refuse base (assoc opts :welcome? "no"))) "a welcome? that is not a function")
-    (is (map? (handlers/handlers (ceremony/ceremony (dissoc base :notify!)) (dissoc opts :identifiers-path)))
+    (is (map? (handlers/handlers (ceremony/ceremony (dissoc base :notify!)) (dissoc opts :identifiers-path :identifiers-view)))
         "control: without the page, none of it is needed")))
 
 (deftest a-bootstrap-identity-has-nothing-to-change--and-is-never-a-500
@@ -316,8 +333,9 @@
   ;; web-base marks a page carrying a CSRF token no-store on its own; a Ring host without
   ;; it has only the handlers' header.
   (let [{:keys [ceremony]} (host)
-        hs      (handlers/handlers ceremony {:view (fn [_ _] "page") :login-path "/login" :identifiers-path "/addresses"})
-        session (:session (dev.arkaitz.auth-base.session/establish ceremony {} ada))
+        hs      (handlers/handlers ceremony {:view (fn [_ _] "page") :identifiers-view (fn [_ _] "page")
+                                             :login-path "/login" :identifiers-path "/addresses"})
+        session (:session (session/establish ceremony {} ada))
         r       ((:identifiers hs) {:request-method :get :uri "/addresses" :session session})]
     (is (= [200 "no-store"] [(:status r) (get-in r [:headers "Cache-Control"])]))))
 
@@ -397,3 +415,123 @@
     (let [e (try (abt/attach done "carol@x.test" (attach-reader sent) {:attach-path "/sumar"}) (catch ExceptionInfo e e))]
       (is (= "carol@x.test" (:identifier (ex-data e))) "an address that was not added throws, naming it")
       (is (not= "/addresses?ab=added" (:path (ex-data e))) (str "and the landing that was not 'added': " (pr-str (ex-data e)))))))
+
+;; --- the sign-in view and the addresses view are two (since 0.19.0) ---------------------
+
+(defn- readme-login
+  "The README's example `login` view, read from README.md and evaluated as written — so
+  the test follows the README, and a README that loses the example reds here."
+  []
+  (let [readme (slurp "README.md")
+        source (second (re-find #"(?s)```clojure\n(\(defn login \[request.*?)\n```" readme))
+        [_ _ & tail] (some-> source read-string)]
+    (when tail
+      (binding [*ns* (the-ns 'dev.arkaitz.auth-base.identifiers-test)]
+        (eval (list* 'fn 'login tail))))))
+
+(defn- host-forms
+  "Every form in a page whose opening tag carries no class: the README view's, never
+  auth-base's own (`ab-form`, `ab-remove`, `ab-sign-out`) — as `[action name]`, the name
+  being the email input's, where a person types."
+  [html]
+  (for [[_ attrs inner] (re-seq #"(?s)<form([^>]*)>(.*?)</form>" html)
+        :when (not (str/includes? attrs "class="))]
+    [(second (re-find #"action=\"([^\"]*)\"" attrs)) (some #(when (str/includes? % "type=\"email\"") (second (re-find #"name=\"([^\"]*)\"" %)))
+                (re-seq #"<input[^>]*>" inner))]))
+
+(defn- ab-state [html] (second (re-find #"data-ab-state=\"([^\"]+)\"" html)))
+
+(deftest the-readme-sign-in-view-installed-as-view-never-draws-the-addresses-pages
+  ;; A3 (the academy's FRICTION): the README's view draws its form for any state it does
+  ;; not recognise, and on the addresses page that form posted to /addresses — adding
+  ;; whatever was typed. Under the split it is handed the five sign-in states only.
+  (let [login (readme-login)
+        _     (is (fn? login) "witness: the README still has its example login view")
+        open? (atom true)
+        {:keys [app sent box] :as h} (host {:view login :rate-limit (fn [_] @open?)})
+        anon    (wbt/visit (wbt/browser app) :get "/login")
+        welcome (signed-in h "eve@x.test")
+        _       (is (= [200 "/addresses?ab=welcome"] (landed welcome)) "witness: a new account, welcomed")
+        page    (wbt/visit welcome :get "/addresses")
+        asked   (wbt/visit page :post "/addresses" {"identifier" "eve.work@x.test"})
+        link    (attach-link sent)
+        _       (is (some? link) "witness: adding through auth-base's own form sends an attach link")
+        mine    (wbt/visit asked :get (path-of link))
+        other   (wbt/visit (wbt/browser app) :get (path-of link))
+        _       (reset! open? false)
+        refused (wbt/visit page :post "/addresses" {"identifier" "eve.other@x.test"} {:follow? false})
+        _       (reset! open? true)
+        again   (wbt/visit page :get "/login")
+        pages   [["/login, anonymous" anon] ["the welcome" welcome] ["/addresses" page] ["/addresses, sent" asked]
+                 ["the attach link, signed in" mine] ["the attach link, elsewhere" other]
+                 ["/addresses, refused" refused] ["/login, signed in" again]]]
+    (is (= 429 (get-in refused [:response :status])) "witness: the add was refused by the limit")
+    (is (= [["/login, anonymous" [["/login" "identifier"]] nil]
+            ["the welcome" [] "identifiers"]
+            ["/addresses" [] "identifiers"]
+            ["/addresses, sent" [] "identifiers"]
+            ["the attach link, signed in" [] "attach-confirm"]
+            ["the attach link, elsewhere" [] "attach-elsewhere"]
+            ["/addresses, refused" [] "identifiers"]
+            ["/login, signed in" [["/login" "identifier"]] nil]]
+           (mapv (fn [[label b]] (let [html (body b)] [label (vec (host-forms html)) (ab-state html)])) pages))
+        "the README view draws the sign-in pages, and every addresses page is auth-base's")
+    ;; Every form the README view drew, submitted with an address nobody has: what a
+    ;; person would type into a page that looked like a sign-in.
+    (reset! sent [])
+    (doseq [[action field] (distinct (mapcat (comp host-forms body second) pages))]
+      (wbt/visit again :post action {field "typed@x.test"}))
+    (is (= "typed@x.test" (:identifier (last @box))) "witness: the README form was submitted, and asked for a sign-in link")
+    (is (= [] @sent) "and no form the README view drew mailed an attach link, nor anything else")))
+
+(deftest the-sign-in-view-sees-only-its-five-states-and-the-identifiers-view-the-other-three
+  (let [{:keys [ceremony]} (host)
+        seen-v  (atom [])
+        seen-iv (atom [])
+        hs      (handlers/handlers ceremony {:view             (fn [_ state] (swap! seen-v conj state) "v")
+                                             :identifiers-view (fn [_ state] (swap! seen-iv conj state) "iv")
+                                             :login-path       "/login" :identifiers-path "/addresses"
+                                             :rate-limit       (fn [_] false)})
+        session (:session (session/establish ceremony {} ada))
+        token   (apply str (repeat 43 "A"))
+        r       (fn [k request] ((get hs k) (merge {:remote-addr "10.0.0.1" :headers {}} request)))
+        answers [(r :form {:request-method :get :uri "/login"})
+                 (r :issue {:request-method :post :uri "/login" :form-params {"identifier" "ada@x.test"}})
+                 (r :confirm {:request-method :get :uri (str "/login/redeem/" token)})
+                 (r :identifiers {:request-method :get :uri "/addresses" :session session})
+                 (r :add {:request-method :post :uri "/addresses" :session session :form-params {"identifier" "bob@x.test"}})
+                 (r :attach-confirm {:request-method :get :uri (str "/sumar/" token) :session session})
+                 (r :attach-confirm {:request-method :get :uri (str "/sumar/" token)})]]
+    (is (= [[200 "v"] [429 "v"] [200 "v"] [200 "iv"] [429 "iv"] [200 "iv"] [200 "iv"]]
+           (mapv (juxt :status :body) answers))
+        "each page is drawn by its own view, the two refusals included")
+    (is (= [{:action "/login" :field "identifier"}
+            {:limited? true :action "/login" :field "identifier"}
+            {:confirm? true :action (str "/login/redeem/" token) :field "identifier"}]
+           @seen-v)
+        "the sign-in view is handed the sign-in states and nothing else")
+    (let [page {:identifiers? true :identifiers ["ada@x.test"] :primary "ada@x.test" :recent? true
+                :action "/addresses" :remove "/addresses/remove" :login "/login?next=%2Faddresses"
+                :skip "/" :field "identifier"}]
+      (is (= [page
+              (assoc page :limited? true)
+              {:attach-confirm? true :action (str "/sumar/" token) :account "ada@x.test"}
+              {:attach-elsewhere? true :login "/login"}]
+             @seen-iv)
+          "and the identifiers view the addresses page, its refusal and the attach link's two pages"))))
+
+(deftest a-hosts-identifiers-view-given-to-the-plugin-draws-the-addresses-pages--and-only-them
+  (let [{:keys [app sent] :as h} (host {:view             (fn [request state] [:div#mine-v (web/view request state)])
+                                        :identifiers-view (fn [request state] [:div#mine-iv (web/view request state)])})
+        marks    (fn [[label b]] [label (cond-> #{} (re-find #"id=\"mine-v\"" (body b)) (conj :view)
+                                                    (re-find #"id=\"mine-iv\"" (body b)) (conj :identifiers-view))])
+        login    (wbt/visit (wbt/browser app) :get "/login")
+        b        (wbt/visit (signed-in h "ada@x.test") :get "/addresses")
+        asked    (wbt/visit b :post "/addresses" {"identifier" "bob@x.test"})
+        link     (path-of (attach-link sent))]
+    (is (= [["/login" #{:view}] ["/addresses" #{:identifiers-view}] ["/addresses, sent" #{:identifiers-view}]
+            ["the attach link, signed in" #{:identifiers-view}] ["the attach link, elsewhere" #{:identifiers-view}]]
+           (mapv marks [["/login" login] ["/addresses" b] ["/addresses, sent" asked]
+                        ["the attach link, signed in" (wbt/visit b :get link)]
+                        ["the attach link, elsewhere" (wbt/visit (wbt/browser app) :get link)]]))
+        "the sign-in is the host's :view, and the addresses page and both attach pages its :identifiers-view")))

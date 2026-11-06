@@ -124,10 +124,17 @@ is the ceremony mounted by hand, which is also what the plugin does inside.
 
 `:view` is called with the request and one of five states — `{}`, `{:sent? true}`,
 `{:spent? true}`, `{:limited? true}`, `{:confirm? true}` — and returns whatever your
-renderer accepts as a `:body`: Hiccup under web-base, a string under plain Ring. That is
-the whole of what this module knows about pages. `{:limited? true}` is the form refused
-by the rate limit, answered with status 429: give it a sentence, or the person sees the
-ordinary form and no reason.
+renderer accepts as a `:body`: Hiccup under web-base, a string under plain Ring. Those
+five are all it is ever handed (since 0.19.0). With an `:identifiers-path` (a second way
+in, below), `:identifiers-view` is handed the other three: `{:identifiers? true …}` for
+the addresses page — `:limited? true` too when adding is refused by the rate limit —
+`{:attach-confirm? true …}` for an attach link opened by the account it would join, and
+`{:attach-elsewhere? true}` for one opened anywhere else. They are two views so that a
+sign-in view like the one below, which draws its form for whatever it does not
+recognise, can never draw it on the addresses page, where it would post an address to
+add. That is the whole of what this module knows about pages. `{:limited? true}` is the
+form refused by the rate limit, answered with status 429: give it a sentence, or the
+person sees the ordinary form and no reason.
 
 `{:confirm? true}` is what opening a link shows (since 0.8.0): one button, whose POST
 signs in. **No GET redeems**, because a GET is what a mail gateway's link scanner sends
@@ -223,7 +230,8 @@ out everywhere, under a `:revoke-path` — while an anonymous one shows a link t
   rebranded once is rebranded here too;
 - `--ab-*` properties and the `ab-*` classes in your own `:stylesheets`, linked after
   `ab.css`. The markup is `section.ab.ab-state-<state>` with `data-ab-state` (`form`,
-  `sent`, `spent`, `limited`, `confirm`) holding `.ab-title`, `.ab-notice`
+  `sent`, `spent`, `limited`, `confirm`, and `identifiers`, `attach-confirm`,
+  `attach-elsewhere` under an `:identifiers-path`) holding `.ab-title`, `.ab-notice`
   (`-ok`/`-error`), `.ab-form`, `.ab-label`, `.ab-input`, `.ab-submit` and `.ab-note`;
   `.ab-sign-out` with `.ab-everywhere`, and `.ab-sign-in`. No inline style, so a CSP's
   `style-src 'self'` refuses nothing;
@@ -233,8 +241,10 @@ out everywhere, under a `:revoke-path` — while an anonymous one shows a link t
   address has an account. The keys are `auth-web/dict`. A string your locale lacks —
   a whole language the dictionary does not have, or one you translated in part — is
   shown in English, never left blank;
-- `:view`, a view of your own for the five states, which may call the standard parts
-  for the states it does not redraw:
+- `:view`, a view of your own for the five sign-in states, which may call the standard
+  parts for the states it does not redraw — the addresses page's three go to
+  `:identifiers-view`, which defaults to the standard `auth-web/view` as `:view` does,
+  so a sign-in view never needs to know they exist:
 
 ```clojure
 (auth-web/plugin ceremony {:view (fn [request state]
@@ -488,7 +498,17 @@ is pressed. Adding tells the main address, and so does removing: an address surv
 "sign out everywhere", and one planted by a stolen session would otherwise be a way back
 in that nobody sees. Removing an address ends every other session of the subject and
 keeps the browser that removed it. The sign-in that creates an account lands on the page
-with `?ab=welcome`, asking for another way in, with a link past it.
+with `?ab=welcome`, asking for another way in, with a link past it. The page and the
+attach link's two pages are drawn by `:identifiers-view`, `auth-web/view` unless you
+give one; your `:view` never sees them (since 0.19.0). One of your own is handed, for the
+page, `:identifiers` (every address), `:primary`, `:recent?` (whether adding and removing
+are open), `:action` (where the add form posts), `:remove` (where a removal posts),
+`:login` (signing in again, back to the page), `:skip` (the way past the welcome) and
+`:field`, plus what just happened — `:welcome?`, `:sent?`, `:added?`, `:removed?`,
+`:taken?`, `:spent?` or `:limited?`. Some of those are spelled as sign-in states are, so
+a sign-in view is never the answer here: `auth-web/identifiers-page` draws the page's
+body. An attach link's pages are `{:attach-confirm? true :action … :account …}`, whose
+button posts to `:action`, and `{:attach-elsewhere? true :login …}`.
 
 `:notify!` is handed `{:ab/kind :attach-link :ab/link url}`, then `:attached` or
 `:detached` with `:ab/identifier`; `auth-web/mail` writes each in the request's language,
@@ -663,7 +683,8 @@ something to name when there is no local identity at all.
 
 | key | meaning |
 |---|---|
-| `:view` | `(fn [request state])` → a `:body` (required); every state carries `:action` and `:field` |
+| `:view` | `(fn [request state])` → a `:body` (required), handed the five sign-in states only — `{}`, `:sent?`, `:spent?`, `:limited?`, `:confirm?` (since 0.19.0); every state carries `:action` and `:field` |
+| `:identifiers-view` | `(fn [request state])` → a `:body`, handed the addresses page's three states — `:identifiers?` (with `:limited?` when adding is refused), `:attach-confirm?`, `:attach-elsewhere?` (since 0.19.0); required under `:identifiers-path`, and the plugin defaults it to `auth-web/view` |
 | `:login-path` | where the form lives (required) |
 | `:logout-path` | where the logout POST goes (default `/logout`) |
 | `:revoke-path` | a POST that signs the subject out everywhere, landing on `:after-logout` (since 0.9.0; default none) |
@@ -723,7 +744,8 @@ tried. The limiter takes its own `:clock`; a host's tests that move time pass th
 `auth/fixed-window-decider`'s shape, below.
 
 A refused request is a `429` with `Cache-Control: no-store` whose body is your `:view`
-in its `{:limited? true}` state — the page the person was on, and a reason — and not an
+in its `{:limited? true}` state — or, for an address being added, `:identifiers-view` in
+`{:identifiers? true :limited? true …}` — the page the person was on, and a reason — and not an
 empty body a browser replaces with its own error page. Under the map it also
 carries `Retry-After`: the whole seconds until that source's window reopens, rounded
 up, so a client that waits exactly that long gets in. Under your own
