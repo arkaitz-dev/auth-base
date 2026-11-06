@@ -6,6 +6,22 @@ opens with **Breaking** or **Changed**, says what a host must change or will not
 the README says "since" beside the behaviour. Every release is on Clojars as
 `dev.arkaitz/auth-base` and tagged `vX.Y.Z`.
 
+## 0.19.0 — unreleased
+
+From what building `academy`, a sixth application, cost (its `FRICTION.md`).
+
+- **Breaking:** `:view` is handed only the five sign-in states — `{}`, `:sent?`, `:spent?`,
+  `:limited?`, `:confirm?` — and a new `:identifiers-view` the other three: the addresses
+  page (`:identifiers?`, its 429 included), `:attach-confirm?` and `:attach-elsewhere?`.
+  A sign-in view written from the README's example drew its form on the addresses page,
+  posting to it, so an address typed there was sent an attach link (A3). The plugin
+  defaults both to `auth-web/view`: a host whose `:view` only drew the sign-in notices
+  nothing, and one whose `:view` branded the address pages moves that code to
+  `:identifiers-view`. The bare handlers refuse an `:identifiers-path` without one.
+- Documented: `:on-revoke` runs on the sign-out-everywhere POST only, never on a
+  `revoke!` the host calls, and may be handed a bootstrap identity's map (A30); the first
+  sign-in under an `:identifiers-path` lands on the welcome, not on `:after-login` (A4).
+
 ## 0.18.0 — 2026-11-05
 
 From what building `shop`, a fifth application, cost (its `FRICTION.md`). On web-base

@@ -275,7 +275,12 @@ mailer:
 **Signing out**: `:on-logout (fn [request])` is handed the logout's request, whose
 `:session/key` names the session being deleted — where a host forgets its record of the
 device. `:revoke-path` is a POST that signs the subject out everywhere: `revoke!`, then
-`:on-revoke (fn [request subject])`, then this session ended. Either hook that throws is
+`:on-revoke (fn [request subject])`, then this session ended. `:on-revoke` runs on that
+POST **only**: a page of yours that calls `revoke!` — removing a member of staff — runs
+its cleanup beside the call, because the hook does not run there, nor when removing an
+address ends a subject's other sessions. Its `subject` is whoever the session names, a
+bootstrap identity's map `{:ab/identifier … :ab/bootstrap? true}` included, so a hook that
+queries your tables guards with `(auth/account? subject)`. Either hook that throws is
 logged, with its stack and nothing from the request, and the session is ended all the
 same (`:on-logout` since 0.10.0, `:on-revoke` since 0.11.0): the sign-out and the
 revocation are the security acts, and a host's record of a device is not. An interrupt
@@ -689,8 +694,8 @@ something to name when there is no local identity at all.
 | `:logout-path` | where the logout POST goes (default `/logout`) |
 | `:revoke-path` | a POST that signs the subject out everywhere, landing on `:after-logout` (since 0.9.0; default none) |
 | `:on-logout` | `(fn [request])`, before a logout ends the session (since 0.9.0); an exception it throws is logged and the session ended all the same (since 0.10.0) |
-| `:on-revoke` | `(fn [request subject])`, after `revoke!` and before this session ends (since 0.9.0); an exception it throws is logged and the session ended all the same (since 0.11.0) |
-| `:after-login` | where a redeemed link lands (default `/`) |
+| `:on-revoke` | `(fn [request subject])`, after `revoke!` and before this session ends (since 0.9.0), on the `:revoke-path` POST only — never on a `revoke!` you call yourself; `subject` may be a bootstrap identity's map, see `auth/account?`; an exception it throws is logged and the session ended all the same (since 0.11.0) |
+| `:after-login` | where a redeemed link lands (default `/`) — except the first sign-in, the one that registers an account under an `:identifiers-path`, which lands on that page with `?ab=welcome` unless `:welcome?` says otherwise; the next sign-in lands here |
 | `:after-logout` | where a logout lands (default `:login-path`) |
 | `:field` | the form field holding the identifier (default `identifier`) |
 | `:rate-limit` | `{:limit n :window-ms n}`, a `(fn [key] boolean-or-decision)`, or absent — see below for what a refusal answers; the map also takes `:max-keys`, how many sources it tracks at once (10000), dropping the oldest window when full |

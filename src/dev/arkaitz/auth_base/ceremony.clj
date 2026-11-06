@@ -369,7 +369,11 @@
 
   Answers the move, `{:ab/subject subject :ab/generation g}` (since 0.18.0): what
   `session/re-establish` takes to keep the browser that asked signed in, when the
-  subject revoked their own sessions."
+  subject revoked their own sessions.
+
+  A host page that revokes somebody calls `revoke!` itself, and `:on-revoke` does not run
+  there: the hook is the handlers' sign-out-everywhere POST's alone, so cleanup a host
+  keeps in it is called beside `revoke!` too."
   [ceremony subject]
   (move subject (revoke-to! ceremony subject)))
 

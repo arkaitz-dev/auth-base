@@ -70,7 +70,9 @@
   and every session of that subject dies at its next request. Revocation ends a person,
   never a role: to take a role away, remove what grants it and leave the sessions be.
   `re-establish` with the move keeps the browser that asked, when that browser is the
-  subject's own."
+  subject's own. A host page that revokes somebody calls `revoke!` itself, and
+  `:on-revoke` does not run there: the hook is the handlers' sign-out-everywhere POST's
+  alone, so cleanup a host keeps in it is called beside `revoke!` too."
   ceremony/revoke!)
 
 (def issue-attach!

@@ -243,7 +243,9 @@
     :logout-path   where the logout POST goes (default \"/logout\")
     :revoke-path   where a POST signs the subject out everywhere — `revoke!`, then this
                    session ended — landing on `:after-logout` (default: no such route)
-    :after-login   where a redeemed link lands (default \"/\")
+    :after-login   where a redeemed link lands (default \"/\") — except the sign-in that
+                   registers an account under an `:identifiers-path`, which lands on the
+                   welcome below unless `:welcome?` says otherwise
     :after-logout  where a logout lands (default `:login-path`)
     :field         the form field holding the identifier (default \"identifier\")
     :keep-session  a set of keys of the session the redemption arrives with that the
@@ -298,7 +300,11 @@
                    revocation undone — and before this session is ended. Its return
                    is ignored, and an exception it throws is treated as `:on-logout`'s
                    is (since 0.11.0): logged, and this session ended all the same. A
-                   `revoke!` that fails is not the hook's, and still fails the request
+                   `revoke!` that fails is not the hook's, and still fails the request.
+                   It runs on that POST only — never on a `revoke!` the host calls
+                   itself, nor on a removal's — and `subject` is whoever this session
+                   names, a bootstrap identity's map included: guard a query with
+                   `auth/account?`
 
   The POST handler reads `:form-params`, so the host's stack must have parsed
   the body — `ring.middleware.params/wrap-params`, which web-base already
